@@ -1,0 +1,7 @@
+{
+  "showsSourceDir": "./downloads/shows",
+  "showsDestDir": "./shows",
+  "moviesSourceDir": "./downloads/movies",
+  "moviesDestDir": "./movies",
+  "devMode": false
+}
