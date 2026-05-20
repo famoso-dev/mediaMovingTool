@@ -1,545 +1,335 @@
 # mediaMovingTool
 
-A Go CLI application that automatically organizes TV show folders and movies. **Requires a configuration file (config.json) to run.** For TV shows, it scans a source directory for folders and files matching the pattern `showname.S##E##`, automatically wrapping single files in folders when needed, and moves them to a structured destination directory. For movies, it automatically wraps single files in folders (using filename without extension) before moving them to the destination, preserving structure.
+A Go CLI that organizes TV shows and movies from configured source directories into a library layout. **Requires `config.json`.** Shows are parsed from folder/file names, optionally matched to existing library folders, and placed under `showsDestDir/{show}/{season}/`. Movies are moved flat into `moviesDestDir` with optional single-file wrapping. Unmatched show items can be handled interactively at the end of the run.
+
+There is **no** separate “other” destination folder — items that do not match a show pattern stay in the shows source until you act on them via the unsure-items prompt (or leave them in place).
 
 ## Features
 
-- **TV Show Organization**: Automatically detects TV show folders and files with format `showname.S##E##` (case-insensitive) and organizes them into `shows/{showName}/{season}/`
-- **Single File Processing**: Automatically wraps single files matching the pattern (e.g., `myshow.s01e15.mkv`) in folders before processing
-- **Movie Organization**: Simple folder/file moving for movies without pattern matching, preserving source structure
-- **Movie File Wrapping**: Automatically wraps single movie files in folders (using filename without extension) before processing
-- **Dual Mode Support**: Process both TV shows and movies in a single run with separate directories
-- **Pattern Matching**: Automatically detects TV show folders and files with format `showname.S##E##` (case-insensitive)
-- **Duplicate Episode Detection**: Checks if an episode with the same season/episode number already exists in the destination. If found, moves the duplicate to `SourceDir/dupe/` instead of skipping it
-- **Case-Insensitive Directory Matching**: On macOS/Linux, detects and reuses existing season directories with different case (e.g., `s01` vs `S01`) to prevent duplicate folders
-- **Automatic Organization**: Moves folders to structured destination for shows, flat structure for movies
-- **Directory Creation**: Automatically creates destination directories if they don't exist
-- **Ignore Folder Support**: Automatically skips any files or folders inside `.ignore` directories
-- **System File Ignoring**: Automatically skips common system files (`.DS_Store`, `Thumbs.db`, etc.)
-- **Test Mode**: Preview operations without actually moving files or creating directories
-- **Detailed Output**: Shows all operations performed with a summary at the end
+- **TV shows**: Dot-style and release-style name parsing; two-pass wrap-then-move
+- **Show library matching**: Reuse existing folders in `showsDestDir` (exact, normalized, fuzzy, dot-series year stripping)
+- **Interactive prompts**: Multiple show-folder matches, fuzzy merge Y/N, season-pack flatten, end-of-run unsure items
+- **Season packs**: Dot (`Show.Name.S01.…`) and release (`My Show (2020) S01 …`) season-only detection; optional flatten into season folder
+- **Movies**: No pattern matching; wrap single files, move folders/files flat to destination
+- **Duplicates (shows)**: Same episode or season pack in dest → move source entry to `showsSourceDir/dupe/`
+- **Duplicates (movies)**: Exact destination path exists → skip with warning
+- **Extension stripping**: Media extensions removed when wrapping single files (shows and movies)
+- **Case-insensitive seasons**: Reuse existing season folder if case differs (`s01` vs `S01`)
+- **`.ignore` and system files**: Skipped automatically
+- **`devMode`**: Preview all operations; print prompts without stdin; no file moves or directory creation
 
 ## Installation
 
-1. Ensure you have [Go 1.21 or later](https://golang.org/dl/) installed
-2. Clone or download this project
-3. Build the application:
-   ```bash
-   # Windows
-   go build -o mediaMovingTool.exe
-   
-   # macOS/Linux
-   go build -o mediaMovingTool
-   ```
+1. [Go 1.21+](https://golang.org/dl/)
+2. Build:
 
-## Usage
-
-### Configuration File Required
-
-**The application requires a `config.json` file to run.** Create this file before running the application.
-
-### Basic Usage
-
-**Running the application:**
 ```bash
-# Windows
-.\mediaMovingTool.exe
-
-# macOS/Linux
-./mediaMovingTool
+go build -o mediaMovingTool      # macOS/Linux
+go build -o mediaMovingTool.exe    # Windows
 ```
 
-The application will read configuration from `config.json` in the same directory as the executable.
+## Configuration
 
-**To specify a different config file location:**
+Copy `config.json.example` to `config.json` and edit:
+
 ```bash
-# Windows
-.\mediaMovingTool.exe -config "C:\path\to\config.json"
-
-# macOS/Linux
-./mediaMovingTool -config "/path/to/config.json"
-```
-
-### Test Mode / Dev Mode
-
-Test mode allows you to preview what the application would do without actually moving files or creating directories. Enable it by setting `devMode: true` in your config file:
-
-```json
-{
-  "showsSourceDir": "./downloads/shows",
-  "showsDestDir": "./shows",
-  "moviesSourceDir": "./downloads/movies",
-  "moviesDestDir": "./movies",
-  "devMode": true
-}
-```
-
-With `devMode: true` in your config file, the application will run in test mode and preview all operations without making changes.
-
-### Configuration File
-
-**The configuration file (`config.json`) is required.** The application will exit with an error if the config file is missing or invalid.
-
-**Config file location:** `config.json` (in the same directory as the executable)
-
-**Example config.json:**
-```json
-{
-  "showsSourceDir": "./downloads/shows",
-  "showsDestDir": "./shows",
-  "moviesSourceDir": "./downloads/movies",
-  "moviesDestDir": "./movies",
-  "devMode": false
-}
-```
-
-To get started, copy `config.json.example` to `config.json` and modify the values as needed:
-```bash
-# Windows
-copy config.json.example config.json
-
-# macOS/Linux
 cp config.json.example config.json
 ```
 
-**Config file fields:**
-- `showsSourceDir`: Source directory to scan for TV show folders (required if processing shows)
-- `showsDestDir`: Base destination directory for organized shows (required if processing shows)
-- `moviesSourceDir`: Source directory to scan for movies (required if processing movies)
-- `moviesDestDir`: Destination directory for movies (required if processing movies)
-- `devMode`: Enable dev mode, which acts like test mode (default: `false`)
+| Field | Description |
+|-------|-------------|
+| `showsSourceDir` | Incoming TV content (required with `showsDestDir` for shows) |
+| `showsDestDir` | TV library root — existing show folders here are used for matching |
+| `moviesSourceDir` | Incoming movies (required with `moviesDestDir` for movies) |
+| `moviesDestDir` | Movie library (flat layout) |
+| `devMode` | `true` = test/preview mode (default `false`) |
 
-**Backward Compatibility:** The old `sourceDir` and `destDir` fields are still supported and will be mapped to `showsSourceDir` and `showsDestDir` respectively.
+**Legacy:** `sourceDir` / `destDir` map to `showsSourceDir` / `showsDestDir` if the new fields are empty.
 
-**Important Notes:**
-- The config file is **required** - the application will not run without it
-- If the config file doesn't exist, the application will exit with an error
-- If the config file has errors, the application will exit with an error
-- You must configure at least one of: shows (showsSourceDir + showsDestDir) or movies (moviesSourceDir + moviesDestDir)
-- If neither shows nor movies are configured, the application will exit with an error
+At least one pair (shows or movies) must be configured or the program exits.
+
+**Custom config path:**
+
+```bash
+./mediaMovingTool -config /path/to/config.json
+```
+
+## Usage
+
+```bash
+./mediaMovingTool
+```
+
+Processing order: TV shows (if configured) → movies (if configured) → summary → **unsure items** prompt (shows only).
+
+## Naming conventions
+
+Patterns are tried in order; ambiguous names (multiple patterns disagree) are not auto-processed.
+
+### Dot style
+
+| Pattern | Example | Parsed show folder | Season |
+|---------|---------|-------------------|--------|
+| Episode | `Show.Name.S01E12` | `Show.Name` | `S01` |
+| Episode + tags | `Show.Name.S02E14.1080p.mkv` | `Show.Name` | `S02` |
+| Season pack | `Series.S01.1080p.WEB-DL` | `Series` | `S01` |
+
+- `S##E##` and `s##e##` are case-insensitive.
+- Text after the episode or season token is allowed (quality, group, etc.).
+- Parsing uses the basename with **media extensions stripped** first (e.g. `.mkv`, `.mp4`).
+
+### Release style (spaces / optional year)
+
+| Pattern | Example | Parsed show folder | Season |
+|---------|---------|-------------------|--------|
+| Year + episode | `My Show (2020) S02E08 …` | `My Show (2020)` | `S02` |
+| Episode, no year | `My Show S02E08 …` | `My Show` | `S02` |
+| Year + season pack | `My Show (2024) S01 (1080p …)` | `My Show (2024)` | `S01` |
+| Season pack, no year | `My Show S01 …` | `My Show` | `S01` |
+
+Release-style show folders **keep `(year)` in the name** when present.
+
+### Destination layout (shows)
+
+```
+showsDestDir/
+  Show.Name/
+    S01/
+      Show.Name.S01E12/          # whole folder moved here
+        Show.Name.S01E12.mkv
+```
+
+## TV show processing flow
+
+1. **Pass 1 — wrap files**: Single files whose names match a show pattern are wrapped in a folder named from the basename **without media extensions** (e.g. `Show.Name.S01E12.mkv` → folder `Show.Name.S01E12/`).
+2. **Pass 2 — move folders**: Each matching folder is moved to `showsDestDir/{show}/{season}/{folderName}/`.
+3. **Non-matching** files/folders are left in the source and listed in **unsure items** after the summary.
+4. **Reserved names** in the shows source are never processed: `.ignore`, `dupe`.
+
+Before creating show or season directories, the tool searches **`showsDestDir`** (the library), not the source.
+
+## Show folder matching (`showsDestDir`)
+
+Matching uses parsed `ShowName` against **existing folders** under `showsDestDir`.
+
+### Dot-series year stripping
+
+For dot-style names with an embedded year segment (e.g. `Series.Name.2024.S05E06` → parsed show `Series.Name.2024`):
+
+- Canonical base: `Series.Name` (year removed for lookup only).
+- If **`showsDestDir/Series.Name`** already exists (case-insensitive) → use that folder.
+- If it does **not** exist → create/use the **parsed** name (e.g. `Series.Name.2024`).
+
+This rule only applies when the year-stripped base folder is already in the library.
+
+### Normalized keys (auto-merge, same style only)
+
+| Style | Normalization | Example keys |
+|-------|---------------|--------------|
+| Dot | Lowercase; strip embedded `.YYYY.`; keep dots | `Show.Name` → `show.name` |
+| Release | Lowercase; keep spaces and `(year)` | `My Show (2020)` → `my show (2020)` |
+
+- Dot vs release (e.g. `Show.Name` vs `My Show (2020)`) → **not** auto-merged on a shared key.
+- `My Show (2020)` vs `My Show` → **not** auto-merged (year kept in release key).
+
+### Fuzzy match (≥ 85% similar)
+
+One cross-style candidate → Y/N prompt. Several candidates → numbered choice.
+
+**`devMode: true`**
+
+- Prints `[TEST]` lines for what would be prompted.
+- Does **not** read stdin.
+- Dot-series: logs if an existing base folder would be used; preview paths keep the **parsed** show name.
+- Fuzzy / multi-match: does not merge; uses parsed name for preview moves.
+- Season flatten: logs prompt; does not flatten.
+- Unsure: lists items and choices only; nothing moved.
+
+### Prompt examples
+
+**Multiple matches:**
+
+```text
+Multiple show folders may match "My Show S02":
+  1) Show.Name (87%)
+  2) My Show (2020) (same series (normalized))
+  0) Create new folder "My Show S02"
+Choice [0-2]:
+```
+
+**Single fuzzy match:**
+
+```text
+Show.Name exists — move "My Show (2020)" into that folder? [Y/N]:
+```
+
+**Dot-series (non-dev):**
+
+```text
+Using existing show folder: Show.Name (dot-series match for Show.Name.2024)
+```
+
+## Season packs
+
+**Season-only** entries (no episode): dot `Series.S01.…` or release `My Show (2020) S01 …`.
+
+Default: move the whole pack folder to `showsDestDir/{show}/{season}/{packFolder}/`.
+
+### Flatten prompt
+
+Offered when **any** of:
+
+- Destination season folder already exists
+- Pack contains subdirectories (nested structure)
+- Pack contains multiple media files, or one file in a nested path
+
+```text
+Season pack: Series.S01.1080p
+Unpack all files directly into Show.Name/S01/ (not in a subfolder)? [Y/N]:
+```
+
+- **Y** — all media files under the pack are moved **flat** into the season folder (name collisions get `_1`, `_2`, … suffixes); empty pack dirs removed.
+- **N** — standard folder move (whole pack as one subdirectory).
+
+Duplicate season pack or episode in dest → source moved to `showsSourceDir/dupe/` (see below).
+
+## Unsure items (end of run)
+
+After the summary, remaining shows-source entries that were **not processed**:
+
+- No pattern matched
+- Ambiguous pattern (multiple parsers disagreed)
+
+```text
+=== Unsure items ===
+  1. [shows] Some.Random.Folder — no show pattern matched
+```
+
+Per item (interactive, not in `devMode`):
+
+1. Move to `showsDestDir` (flat, same entry name)
+2. Move to `moviesDestDir` (flat; unavailable if not configured)
+3. Move to `showsSourceDir/dupe/`
+4. Skip (leave in source)
+
+## Movies
+
+- **No** show-style pattern matching.
+- **Pass 1**: Every non-ignored file in `moviesSourceDir` is wrapped: `Movie.Title.2024.1080p.mkv` → folder `Movie.Title.2024.1080p/`.
+- **Pass 2**: Every top-level folder (including wrapped) is moved to `moviesDestDir/{sameName}/` (flat).
+- If `moviesDestDir/{name}` already exists → **warning and skip** (not moved to dupe).
+- Skips: `.ignore`, system/hidden files, paths inside `.ignore`.
+
+## Dupe folder (shows)
+
+When the same **episode** (`S01E22` in any folder name under the season) or **season pack** (season already present in dest) is detected:
+
+- Source folder is moved to **`showsSourceDir/dupe/`** (created if needed).
+- `dupe` in the shows source is never scanned for new content.
+
+Movies do not use dupe for duplicates; they are skipped with a warning.
+
+## `devMode` (test mode)
+
+Set `"devMode": true` in `config.json`:
+
+- All moves/creates/wraps print `[TEST] Would …` / `[TEST] …`.
+- Summary includes `[TEST MODE - No actual changes were made]`.
+- Interactive prompts are described but not executed; no stdin for show matching or unsure items.
+- Wrapped show folders that only exist as previews are still evaluated in pass 2 (test-only path).
+
+## Ignored paths and files
+
+- **`.ignore`**: Any path under a directory named `.ignore` is skipped (shows and movies).
+- **System files**: `.DS_Store`, `Thumbs.db`, `desktop.ini`, `._*`, `~$*`, and other built-in patterns (see `shouldIgnoreFile` in `main.go`).
 
 ## Examples
 
-### Example 1: Basic Organization
+### Shows — basic
 
-**Before:**
+**Source:**
+
 ```
-downloads/
-  ├── GameOfThrones.S01E01/
-  ├── GameOfThrones.S01E02/
-  ├── BreakingBad.S02E05/
-  └── .ignore/
-      └── temp.S01E99/
+downloads/shows/
+  Show.Name.S01E01/
+  Show.Name.S01E02/
 ```
 
-**Config.json:**
-```json
-{
-  "showsSourceDir": "./downloads",
-  "showsDestDir": "./shows",
-  "devMode": false
-}
-```
+**Config:** `showsSourceDir`, `showsDestDir`, `devMode: false`
 
-**After running:**
-```bash
-.\mediaMovingTool.exe
-```
+**Library:**
 
-**Result:**
 ```
 shows/
-  ├── GameOfThrones/
-  │   └── S01/
-  │       ├── GameOfThrones.S01E01/
-  │       └── GameOfThrones.S01E02/
-  └── BreakingBad/
-      └── S02/
-          └── BreakingBad.S02E05/
-
-downloads/
-  └── .ignore/
-      └── temp.S01E99/  (skipped, not moved)
+  Show.Name/
+    S01/
+      Show.Name.S01E01/
+      Show.Name.S01E02/
 ```
 
-Note: The folder `temp.S01E99` inside `.ignore` was automatically skipped and not moved.
+### Shows — wrap single file
 
-### Example 2: Movie Organization
+`Series.S01E05.mkv` → wrap `Series.S01E05/` → `shows/Series/S01/Series.S01E05/`.
 
-**Before:**
+### Shows — duplicate episode
+
+Dest already has `…/S01/Show.Name.S01E22.1080p/`. New `Show.Name.S01E22.720p/` → `showsSourceDir/dupe/Show.Name.S01E22.720p/`.
+
+### Shows — dot-series year
+
+Library has `Show.Name/`. Incoming `Show.Name.2024.S05E06` → uses `Show.Name/`.  
+If `Show.Name/` does **not** exist → new folder `Show.Name.2024/`.
+
+### Movies
+
+**Source:**
+
 ```
 downloads/movies/
-  ├── The.Matrix.1999/
-  ├── Inception.2010/
-  ├── Interstellar.2014.mkv
-  └── .ignore/
-      └── incomplete.mkv
-```
-
-**Config.json:**
-```json
-{
-  "moviesSourceDir": "./downloads/movies",
-  "moviesDestDir": "./movies",
-  "devMode": false
-}
-```
-
-**After running:**
-```bash
-.\mediaMovingTool.exe
+  Movie.Title.2024/
+  Another.Film.2020.mkv
 ```
 
 **Result:**
+
 ```
 movies/
-  ├── The.Matrix.1999/
-  ├── Inception.2010/
-  └── Interstellar.2014/
-      └── Interstellar.2014.mkv
-
-downloads/movies/
-  └── .ignore/
-      └── incomplete.mkv  (skipped, not moved)
+  Movie.Title.2024/
+  Another.Film.2020/
+    Another.Film.2020.mkv
 ```
 
-The single file `Interstellar.2014.mkv` was automatically wrapped in a folder `Interstellar.2014/` before being moved to the destination. The file `incomplete.mkv` inside `.ignore` was automatically skipped.
+### `devMode` output (excerpt)
 
-**Output:**
-```
-=== Processing Movies ===
-Wrapped movie file in folder: Interstellar.2014.mkv -> Interstellar.2014/
-Moved folder: ./downloads/movies/The.Matrix.1999 -> ./movies/The.Matrix.1999
-Moved folder: ./downloads/movies/Inception.2010 -> ./movies/Inception.2010
-Moved folder: ./downloads/movies/Interstellar.2014 -> ./movies/Interstellar.2014
-```
-
-### Example 3: Processing Both Shows and Movies
-
-**Config.json:**
-```json
-{
-  "showsSourceDir": "./downloads/shows",
-  "showsDestDir": "./shows",
-  "moviesSourceDir": "./downloads/movies",
-  "moviesDestDir": "./movies",
-  "devMode": false
-}
-```
-
-**Running:**
-```bash
-.\mediaMovingTool.exe
-```
-
-The application will process both TV shows and movies in a single run, showing separate sections for each.
-
-### Example 4: Single File Processing
-
-**Scenario**: You have a single file `myshow.s01e15.mkv` in your downloads folder that needs to be organized.
-
-**Before:**
-```
-downloads/
-  └── myshow.s01e15.mkv
-```
-
-**Config.json:**
-```json
-{
-  "showsSourceDir": "./downloads",
-  "showsDestDir": "./shows",
-  "devMode": false
-}
-```
-
-**After running:**
-```bash
-.\mediaMovingTool.exe
-```
-
-**Result:**
-```
-shows/
-  └── myshow/
-      └── S01/
-          └── myshow.s01e15/
-              └── myshow.s01e15.mkv
-```
-
-The single file was automatically wrapped in a folder (`myshow.s01e15/`) and then processed normally through the organization system.
-
-**Output:**
 ```
 === Processing TV Shows ===
-Wrapped file in folder: myshow.s01e15.mkv -> myshow.s01e15/
-Created directory: ./shows/myshow/S01
-Moved: ./downloads/myshow.s01e15 -> ./shows/myshow/S01/myshow.s01e15
-```
-
-### Example 5: Duplicate Episode Detection
-
-**Scenario**: You have `GameOfThrones.S01E22.720p` in your downloads folder, but `GameOfThrones.S01E22.1080p` already exists in the destination.
-
-**Before:**
-```
-downloads/
-  └── GameOfThrones.S01E22.720p/
-
-shows/
-  └── GameOfThrones/
-      └── S01/
-          └── GameOfThrones.S01E22.1080p/
-```
-
-**Config.json:**
-```json
-{
-  "showsSourceDir": "./downloads",
-  "showsDestDir": "./shows",
-  "devMode": false
-}
-```
-
-**After running:**
-```bash
-.\mediaMovingTool.exe
-```
-
-**Result:**
-```
-downloads/
-  └── dupe/
-      └── GameOfThrones.S01E22.720p/
-
-shows/
-  └── GameOfThrones/
-      └── S01/
-          └── GameOfThrones.S01E22.1080p/
-```
-
-The duplicate episode (S01E22) was detected and moved to `downloads/dupe/` instead of being skipped. The dupe directory is automatically created if it doesn't exist.
-
-**Output:**
-```
-=== Processing TV Shows ===
-Duplicate episode detected (S01E22), moved to dupe: ./downloads/GameOfThrones.S01E22.720p -> ./downloads/dupe/GameOfThrones.S01E22.720p
-```
-
-### Example 6: Test Mode Preview
-
-**Config.json:**
-```json
-{
-  "showsSourceDir": "./downloads",
-  "showsDestDir": "./shows",
-  "devMode": true
-}
-```
-
-**Running:**
-```bash
-.\mediaMovingTool.exe
-```
-
-**Output:**
-```
-=== Processing TV Shows ===
-[TEST] Would create directory: ./shows/GameOfThrones/S01
-[TEST] Would move: ./downloads/GameOfThrones.S01E01 -> ./shows/GameOfThrones/S01/GameOfThrones.S01E01
-
-=== Processing Movies ===
-[TEST] Would move folder: ./downloads/movies/The.Matrix.1999 -> ./movies/The.Matrix.1999
+[TEST] Would create directory: ./shows/Show.Name/S01
+[TEST] Would move: ./downloads/shows/Show.Name.S01E01 -> ./shows/Show.Name/S01/Show.Name.S01E01
 
 === Summary ===
 [TEST MODE - No actual changes were made]
-Directories created: 1
-Items moved: 2
-
-Created directories:
-  - ./shows/GameOfThrones/S01
-
-Moved items:
-  - ./downloads/GameOfThrones.S01E01 -> ./shows/GameOfThrones/S01/GameOfThrones.S01E01
-  - ./downloads/movies/The.Matrix.1999 -> ./movies/The.Matrix.1999
 ```
 
-## Pattern Matching
+## Error handling
 
-The application matches folders and files with the following pattern:
-- Format: `{showName}.S##E##`
-- Case-insensitive: Works with `S01E20`, `s01e20`, `S01e20`, etc.
-- Flexible: Supports additional text after the episode number (e.g., `showname.S01E20.mkv.folder`, `showname.S01E20.mkv`)
+- Missing or invalid `config.json` → exit
+- Missing source directory → error for that section
+- No shows/movies configured → exit
+- Per-item failures → log and continue where possible
 
-**Examples of matching folder names:**
-- `GameOfThrones.S01E01`
-- `breaking.bad.s02e05`
-- `TheOffice.S03E12.mkv`
-- `stranger.things.S01E08.1080p`
-
-**Examples of matching file names:**
-- `myshow.s01e15.mkv`
-- `TheOffice.S03E12.mp4`
-- `breaking.bad.s02e05.avi`
-
-**Note**: Single files matching the pattern are automatically wrapped in folders (using the filename without extension as the folder name) before being processed.
-
-## Behavior
-
-### TV Shows Mode
-- **Pattern Matching**: Processes folders and files matching `showname.S##E##` pattern
-- **Single File Processing**: Automatically wraps single files in folders (using filename without extension) before processing
-- **Two-Pass Processing**: 
-  1. First pass: Wraps matching single files in folders
-  2. Second pass: Processes all folders (including newly wrapped ones) normally
-- **Ignore Folder Support**: Skips any files or folders inside `.ignore` directories
-- **Directory Creation**: Creates `shows/{showName}/{season}/` if it doesn't exist
-- **Case-Insensitive Directory Matching**: On case-sensitive filesystems (macOS/Linux), checks for existing season directories with different case and reuses them (e.g., if `s01` exists, uses it instead of creating `S01`)
-- **Moving Folders**: Moves entire folders from source to destination
-- **Organization**: Organizes shows by name and season
-
-### Movies Mode
-- **No Pattern Matching**: Processes all folders and files in the source directory
-- **Single File Processing**: Automatically wraps single files in folders (using filename without extension) before processing
-- **Two-Pass Processing**: 
-  1. First pass: Wraps single files in folders
-  2. Second pass: Processes all folders (including newly wrapped ones)
-- **Ignore Folder Support**: Skips any files or folders inside `.ignore` directories
-- **Directory Creation**: Creates destination directory if it doesn't exist
-- **Moving Items**: Moves folders from source to destination (files are wrapped first)
-- **Structure Preservation**: Preserves the source folder structure (flat move)
-
-### General Behavior
-- **Dual Processing**: Can process both TV shows and movies in a single run
-- **Ignore Folder Support**: Automatically skips files and folders inside `.ignore` directories
-- **Duplicate Detection**: 
-  - **TV Shows**: Checks if an episode with the same season/episode pattern (e.g., S01E22) already exists in the destination season directory. If found, moves the duplicate to `SourceDir/dupe/` folder
-  - **Movies**: Skips items if the exact destination already exists
-- **Case-Insensitive Directory Handling**: On macOS/Linux, prevents duplicate season folders by detecting and reusing existing directories with different case
-- **Error Handling**: Continues processing other items if one fails
-- **Test Mode**: Preview all operations without making changes
-
-## Ignore Folder Support
-
-The application automatically skips any files or folders inside `.ignore` directories:
-
-- **Automatic Detection**: Any directory named `.ignore` (case-sensitive) is automatically skipped
-- **Recursive Skipping**: Files and folders inside `.ignore` directories are skipped at any nesting level
-- **Works for Both Modes**: Applies to both TV shows and movies processing
-- **Example**: If you have `sourceDir/.ignore/temp.mkv`, it will be skipped during processing
-
-**Use Cases:**
-- Skip temporary files or folders
-- Exclude test data from processing
-- Ignore files that are still downloading or incomplete
-
-**Note**: The `.ignore` folder itself is also skipped, so it won't be moved to the destination.
-
-## System File Ignoring
-
-The application automatically skips common system files and hidden files that should not be processed:
-
-**Ignored Files:**
-- `.DS_Store` - macOS Finder metadata files
-- `Thumbs.db` - Windows thumbnail cache files
-- `desktop.ini` - Windows folder customization files
-- `._*` - macOS resource fork files (any file starting with `._`)
-- `~$*` - Temporary files (any file starting with `~$`)
-- `.Spotlight-V100` - macOS Spotlight index
-- `.Trashes` - macOS Trash folder
-- `.fseventsd` - macOS file system events
-- `.VolumeIcon.icns` - macOS volume icon
-- `.com.apple.*` - macOS Apple system files
-- `$RECYCLE.BIN` - Windows Recycle Bin folder
-- `System Volume Information` - Windows system folder
-
-**Behavior:**
-- System files are automatically skipped during processing
-- Applies to both TV shows and movies processing
-- No configuration needed - works automatically
-- Prevents errors when encountering system files
-
-**Note**: These files are skipped silently - they won't cause errors or warnings during processing.
-
-## Error Handling
-
-The application handles various error conditions:
-- **Missing config file** (exits with error - config file is required)
-- **Invalid config file** (exits with error - must be valid JSON)
-- **Missing source directory** (exits with error)
-- **Permission errors** (logs error and continues)
-- **Duplicate episodes** (TV shows: moves to `SourceDir/dupe/`, Movies: skips with warning)
-- **Duplicate exact names** (skips with warning)
-- **Invalid folder names** (skips non-matching folders)
-- **Case-insensitive directory matching errors** (falls back to creating new directory)
-- **No directories configured** (exits with error - must configure at least shows or movies)
-
-## Case-Insensitive Directory Matching
-
-On case-sensitive filesystems (macOS/Linux), the application intelligently handles existing season directories with different case:
-
-- **Problem**: If a show already has an `s01` folder, creating a new `S01` folder would result in duplicate season folders
-- **Solution**: The application checks for case-insensitive matches before creating directories
-- **Behavior**: If `s01` exists, it will use that directory instead of creating `S01`
-- **Output**: When reusing an existing directory with different case, a message is displayed: `Using existing directory: .../s01 (instead of .../S01)`
-
-This ensures consistent organization and prevents duplicate season folders on macOS and Linux systems.
-
-## Single File Processing
-
-The application automatically handles single files that match the TV show pattern:
-
-- **Detection**: Files matching `showname.S##E##` pattern are automatically detected
-- **Wrapping**: Files are wrapped in folders using the filename without extension (e.g., `myshow.s01e15.mkv` → folder `myshow.s01e15/`)
-- **Processing**: Wrapped folders are then processed normally through the organization system
-- **Example**: If `myshow.s01e15.mkv` exists in the source, it will be wrapped in `myshow.s01e15/` folder, then moved to `shows/myshow/S01/myshow.s01e15/`
-
-**Note**: Files are processed before folders, ensuring wrapped files are included in the normal processing flow including duplicate detection.
-
-## Movie File Wrapping
-
-The application automatically wraps single movie files in folders before processing:
-
-- **Detection**: Any single file found in the movie source directory is automatically detected
-- **Wrapping**: Files are wrapped in folders using the filename without extension (e.g., `The.Matrix.1999.mkv` → folder `The.Matrix.1999/`)
-- **Processing**: Wrapped folders are then processed normally and moved to the destination
-- **Example**: If `Interstellar.2014.mkv` exists in the source, it will be wrapped in `Interstellar.2014/` folder, then moved to `movies/Interstellar.2014/`
-
-**Note**: Unlike TV shows which require pattern matching, movies wrap any single file found in the source directory. Files are processed before folders, ensuring wrapped files are included in the normal processing flow.
-
-## Duplicate Episode Detection
-
-The application automatically detects duplicate TV show episodes based on season/episode patterns:
-
-- **Detection Method**: Scans the destination season directory for any folders containing the same season/episode pattern (e.g., S01E22)
-- **Case-Insensitive**: Matches are case-insensitive, so `S01E22`, `s01e22`, and `S01e22` are all considered the same episode
-- **Dupe Folder**: When a duplicate is detected, the source folder (or wrapped file folder) is moved to `SourceDir/dupe/` instead of being skipped
-- **Automatic Creation**: The dupe directory is automatically created if it doesn't exist
-- **Example**: If `GameOfThrones.S01E22.1080p` already exists in `shows/GameOfThrones/S01/`, then a new folder `GameOfThrones.S01E22.720p` (or wrapped file `GameOfThrones.S01E22.720p.mkv`) will be moved to `downloads/dupe/GameOfThrones.S01E22.720p/`
-
-**Note**: The duplicate detection checks for the season/episode pattern, not exact folder names. So different releases of the same episode (e.g., 720p vs 1080p) are recognized as duplicates. This applies to both folders and files (after wrapping).
-
-## Build from Source
+## Build from source
 
 ```bash
-# Windows - Build executable
-go build -o mediaMovingTool.exe
-
-# macOS/Linux - Build executable
-go build -o mediaMovingTool
-
-# Run without building (all platforms)
-go run main.go
-
-# Run with test mode (set devMode: true in config.json)
-go run main.go
+go build -o mediaMovingTool .
+go test ./...
+go run .
 ```
 
 ## Requirements
 
-- Go 1.21 or later
+- Go 1.21+
 - Windows, Linux, or macOS
 
 ## License
 
-This project is provided as-is for personal use.
+Provided as-is for personal use.
