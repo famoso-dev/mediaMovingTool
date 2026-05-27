@@ -132,9 +132,10 @@ This rule only applies when the year-stripped base folder is already in the libr
 - Dot vs release (e.g. `Show.Name` vs `My Show (2020)`) → **not** auto-merged on a shared key.
 - `My Show (2020)` vs `My Show` → **not** auto-merged (year kept in release key).
 
-### Fuzzy match (≥ 85% similar)
+### Fuzzy match
 
-One cross-style candidate → Y/N prompt. Several candidates → numbered choice.
+- **> 60% similar** — auto-merged silently (no prompt).
+- **50–60% similar** — one candidate → Y/N prompt; several candidates → numbered choice.
 
 **`devMode: true`**
 
@@ -207,8 +208,8 @@ After the summary, remaining shows-source entries that were **not processed**:
 
 Per item (interactive, not in `devMode`):
 
-1. Move to `showsDestDir` — media files are wrapped in a folder (extension stripped); folders move as-is
-2. Move to `moviesDestDir` — same wrapping behaviour; unavailable if not configured
+1. Move to `showsDestDir` — if the item matches a show pattern it is routed to `showsDestDir/{ShowName}/{Season}/` (media files wrapped, extension stripped); otherwise deposited at the dest root
+2. Move to `moviesDestDir` — media files are wrapped in a folder (extension stripped); folders move as-is; unavailable if not configured
 3. Move to `showsSourceDir/dupe/` (flat, no wrapping)
 4. Skip (leave in source)
 
