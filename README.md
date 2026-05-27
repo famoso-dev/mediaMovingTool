@@ -13,7 +13,7 @@ There is **no** separate “other” destination folder — items that do not ma
 - **Movies**: No pattern matching; wrap single files, move folders/files flat to destination
 - **Duplicates (shows)**: Same episode or season pack in dest → move source entry to `showsSourceDir/dupe/`
 - **Duplicates (movies)**: Exact destination path exists → skip with warning
-- **Extension stripping**: Media extensions removed when wrapping single files (shows and movies)
+- **Extension stripping**: Media extensions removed when wrapping single files (shows, movies, and unsure-item moves)
 - **Case-insensitive seasons**: Reuse existing season folder if case differs (`s01` vs `S01`)
 - **`.ignore` and system files**: Skipped automatically
 - **`devMode`**: Preview all operations; print prompts without stdin; no file moves or directory creation
@@ -103,7 +103,7 @@ showsDestDir/
 
 1. **Pass 1 — wrap files**: Single files whose names match a show pattern are wrapped in a folder named from the basename **without media extensions** (e.g. `Show.Name.S01E12.mkv` → folder `Show.Name.S01E12/`).
 2. **Pass 2 — move folders**: Each matching folder is moved to `showsDestDir/{show}/{season}/{folderName}/`.
-3. **Non-matching** files/folders are left in the source and listed in **unsure items** after the summary.
+3. **Non-matching** files/folders are left in the source and listed in **unsure items** after the summary; if the user moves a media file via that prompt it is wrapped in a folder (extension stripped) at the destination.
 4. **Reserved names** in the shows source are never processed: `.ignore`, `dupe`.
 
 Before creating show or season directories, the tool searches **`showsDestDir`** (the library), not the source.
@@ -207,9 +207,9 @@ After the summary, remaining shows-source entries that were **not processed**:
 
 Per item (interactive, not in `devMode`):
 
-1. Move to `showsDestDir` (flat, same entry name)
-2. Move to `moviesDestDir` (flat; unavailable if not configured)
-3. Move to `showsSourceDir/dupe/`
+1. Move to `showsDestDir` — media files are wrapped in a folder (extension stripped); folders move as-is
+2. Move to `moviesDestDir` — same wrapping behaviour; unavailable if not configured
+3. Move to `showsSourceDir/dupe/` (flat, no wrapping)
 4. Skip (leave in source)
 
 ## Movies

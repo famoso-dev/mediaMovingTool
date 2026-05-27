@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/fs"
 	"os"
@@ -31,15 +32,7 @@ type Config struct {
 
 // loadConfig loads configuration from config.json - config file is required
 func loadConfig(configPath string) (*Config, error) {
-	config := &Config{
-		SourceDir:       "",
-		DestDir:         "",
-		ShowsSourceDir:  "",
-		ShowsDestDir:    "",
-		MoviesSourceDir: "",
-		MoviesDestDir:   "",
-		DevMode:         false,
-	}
+	config := &Config{}
 
 	// Check if config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -109,8 +102,11 @@ var (
 	embeddedYearPattern          = regexp.MustCompile(`(?:^|[.\s_])(?:19|20)\d{2}(?:[.\s_)]|$)`)
 )
 
-// fuzzyShowMatchThreshold is the minimum similarity ratio (0-1) to suggest merging show folders.
-const fuzzyShowMatchThreshold = 0.85
+// fuzzyAutoThreshold: similarity above this auto-merges show folders without prompting.
+const fuzzyAutoThreshold = 0.60
+
+// fuzzyPromptThreshold: similarity above this (and at or below fuzzyAutoThreshold) prompts the user.
+const fuzzyPromptThreshold = 0.50
 
 // minShowNameNormLen is the minimum normalized name length for fuzzy matching.
 const minShowNameNormLen = 3
@@ -131,32 +127,18 @@ func isInIgnoreFolder(path string) bool {
 	return false
 }
 
-// shouldIgnoreFile checks if a file should be ignored based on its name
-// Returns true for system files, hidden files, and other files that should be skipped
+var ignorePatterns = []string{
+	".DS_Store", "Thumbs.db", "desktop.ini", "._", "~$",
+	".Spotlight-V100", ".Trashes", ".fseventsd", ".VolumeIcon.icns",
+	".com.apple.", "$RECYCLE.BIN", "System Volume Information",
+}
+
 func shouldIgnoreFile(fileName string) bool {
-	// Common system and hidden files to ignore
-	ignorePatterns := []string{
-		".DS_Store",           // macOS Finder metadata
-		"Thumbs.db",          // Windows thumbnail cache
-		"desktop.ini",        // Windows folder customization
-		"._",                 // macOS resource fork files (starts with ._)
-		"~$",                 // Temporary files (starts with ~$)
-		".Spotlight-V100",    // macOS Spotlight index
-		".Trashes",           // macOS Trash
-		".fseventsd",         // macOS file system events
-		".VolumeIcon.icns",   // macOS volume icon
-		".com.apple.",        // macOS Apple system files
-		"$RECYCLE.BIN",       // Windows Recycle Bin
-		"System Volume Information", // Windows system folder
-	}
-	
-	// Check if filename matches any ignore pattern
 	for _, pattern := range ignorePatterns {
 		if strings.HasPrefix(fileName, pattern) || fileName == pattern {
 			return true
 		}
 	}
-	
 	return false
 }
 
@@ -346,21 +328,14 @@ func levenshteinDistance(a, b string) int {
 			if a[i-1] == b[j-1] {
 				cost = 0
 			}
-			curr[j] = minInt(
-				minInt(prev[j]+1, curr[j-1]+1),
+			curr[j] = min(
+				min(prev[j]+1, curr[j-1]+1),
 				prev[j-1]+cost,
 			)
 		}
 		prev, curr = curr, prev
 	}
 	return prev[len(b)]
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // showNameSimilarity returns a ratio in [0,1] comparing normalized show names.
@@ -398,7 +373,6 @@ func findShowFolderCandidates(destDir, parsedShowName string) []showFolderCandid
 		return nil
 	}
 	parsedNorm := normalizeShowName(parsedShowName)
-	seen := make(map[string]bool)
 	var out []showFolderCandidate
 
 	for _, entry := range entries {
@@ -406,17 +380,13 @@ func findShowFolderCandidates(destDir, parsedShowName string) []showFolderCandid
 			continue
 		}
 		existing := entry.Name()
-		if seen[existing] {
-			continue
-		}
-		seen[existing] = true
 		score := showNameSimilarity(parsedShowName, existing)
 		normMatch := parsedNorm != "" && normalizeShowName(existing) == parsedNorm
 		if strings.EqualFold(existing, parsedShowName) {
 			score = 1
 			normMatch = true
 		}
-		if normMatch || score >= fuzzyShowMatchThreshold {
+		if normMatch || score > fuzzyPromptThreshold {
 			out = append(out, showFolderCandidate{
 				FolderName: existing,
 				Score:      score,
@@ -520,38 +490,70 @@ func resolveShowDestFolder(destDir, parsedShowName string, testMode bool, reader
 		}
 	}
 
-	candidates := findShowFolderCandidates(destDir, parsedShowName)
-	if len(candidates) == 0 {
-		return parsedShowName
+	// Fast path: exact or case-insensitive match — skip fuzzy scan entirely.
+	if actual, ok := showFolderExists(destDir, parsedShowName); ok {
+		if actual != parsedShowName {
+			fmt.Printf("Using existing show folder: %s (matches %s)\n", actual, parsedShowName)
+		}
+		return actual
 	}
 
-	var normMatches []showFolderCandidate
-	var fuzzyOnly []showFolderCandidate
+	// Normalized match: same show name after normalization (e.g. different year suffix).
+	// O(n) string comparisons only — no Levenshtein yet.
+	parsedNorm := normalizeShowName(parsedShowName)
+	if parsedNorm != "" {
+		entries, _ := os.ReadDir(destDir)
+		var normMatches []showFolderCandidate
+		for _, entry := range entries {
+			if entry.IsDir() && normalizeShowName(entry.Name()) == parsedNorm {
+				normMatches = append(normMatches, showFolderCandidate{FolderName: entry.Name(), Score: 1, NormMatch: true})
+			}
+		}
+		if len(normMatches) == 1 {
+			fmt.Printf("Using existing show folder: %s (matches %s)\n", normMatches[0].FolderName, parsedShowName)
+			return normMatches[0].FolderName
+		}
+		if len(normMatches) > 1 {
+			return promptShowFolderChoice(parsedShowName, normMatches, testMode, reader)
+		}
+	}
+
+	// Fuzzy scan: only reached when no direct or normalized match exists.
+	// Runs Levenshtein against each library folder.
+	candidates := findShowFolderCandidates(destDir, parsedShowName)
+	var autoMatches, promptMatches []showFolderCandidate
 	for _, c := range candidates {
 		if c.NormMatch {
-			normMatches = append(normMatches, c)
+			continue // already handled above
+		}
+		if c.Score > fuzzyAutoThreshold {
+			autoMatches = append(autoMatches, c)
 		} else {
-			fuzzyOnly = append(fuzzyOnly, c)
+			promptMatches = append(promptMatches, c)
 		}
 	}
 
-	if len(normMatches) > 1 {
-		return promptShowFolderChoice(parsedShowName, normMatches, testMode, reader)
-	}
-	if len(normMatches) == 1 {
-		if !strings.EqualFold(normMatches[0].FolderName, parsedShowName) {
-			fmt.Printf("Using existing show folder: %s (matches %s)\n", normMatches[0].FolderName, parsedShowName)
+	// High-confidence (> 60%): auto-assume same show, no prompt.
+	if len(autoMatches) > 0 {
+		best := autoMatches[0]
+		if testMode {
+			fmt.Printf("[TEST] Auto-matched show folder %q (%.0f%%) for %q — would use it\n",
+				best.FolderName, best.Score*100, parsedShowName)
+			return parsedShowName
 		}
-		return normMatches[0].FolderName
+		fmt.Printf("Using existing show folder: %s (%.0f%% match for %s)\n",
+			best.FolderName, best.Score*100, parsedShowName)
+		return best.FolderName
 	}
 
-	if len(fuzzyOnly) > 1 {
-		return promptShowFolderChoice(parsedShowName, fuzzyOnly, testMode, reader)
+	// Low-confidence (50-60%): prompt.
+	if len(promptMatches) > 1 {
+		return promptShowFolderChoice(parsedShowName, promptMatches, testMode, reader)
 	}
-	if len(fuzzyOnly) == 1 {
-		if promptMergeShowFolder(parsedShowName, fuzzyOnly[0].FolderName, fuzzyOnly[0].Score, testMode, reader) {
-			fmt.Printf("Using existing show folder: %s\n", fuzzyOnly[0].FolderName)
-			return fuzzyOnly[0].FolderName
+	if len(promptMatches) == 1 {
+		if promptMergeShowFolder(parsedShowName, promptMatches[0].FolderName, promptMatches[0].Score, testMode, reader) {
+			fmt.Printf("Using existing show folder: %s\n", promptMatches[0].FolderName)
+			return promptMatches[0].FolderName
 		}
 		return parsedShowName
 	}
@@ -609,35 +611,18 @@ func checkEpisodeExists(destPath, seasonEpisode string) (bool, error) {
 		return false, err
 	}
 
-	// Normalize the season/episode pattern to uppercase for case-insensitive comparison
 	seasonEpisodeUpper := strings.ToUpper(seasonEpisode)
 
-	// Pattern to match season/episode in folder names (case-insensitive)
-	// Matches patterns like S01E22, s01e22, S01e22, etc.
-	pattern := regexp.MustCompile(`([Ss]\d{1,2}[Ee]\d{1,2})`)
-
-	// Check each entry in the destination directory
 	for _, entry := range entries {
 		if !entry.IsDir() {
-			continue // Skip files, only check directories
+			continue
 		}
-
-		folderName := entry.Name()
-		// Find all season/episode patterns in the folder name
-		matches := pattern.FindAllStringSubmatch(folderName, -1)
-		for _, match := range matches {
-			if len(match) > 0 {
-				// Normalize to uppercase for case-insensitive comparison
-				matchUpper := strings.ToUpper(match[0])
-				if matchUpper == seasonEpisodeUpper {
-					// Found a duplicate episode
-					return true, nil
-				}
+		for _, match := range episodeTokenPattern.FindAllStringSubmatch(entry.Name(), -1) {
+			if strings.ToUpper(match[0]) == seasonEpisodeUpper {
+				return true, nil
 			}
 		}
 	}
-
-	// No duplicate found
 	return false, nil
 }
 
@@ -650,16 +635,24 @@ func checkSeasonPackExists(destPath, season string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	seasonRe := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(season) + `\b`)
-	episodeRe := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(season) + `[Ee]\d{1,2}\b`)
+	seasonUpper := strings.ToUpper(season)
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		name := entry.Name()
-		if seasonRe.MatchString(name) && !episodeRe.MatchString(name) {
-			return true, nil
+		nameUpper := strings.ToUpper(entry.Name())
+		idx := strings.Index(nameUpper, seasonUpper)
+		if idx == -1 {
+			continue
 		}
+		after := idx + len(seasonUpper)
+		if after < len(nameUpper) {
+			ch := nameUpper[after]
+			if (ch >= '0' && ch <= '9') || ch == 'E' {
+				continue
+			}
+		}
+		return true, nil
 	}
 	return false, nil
 }
@@ -673,6 +666,13 @@ func wrapFileInFolder(sourceDir, fileName, wrapLabel string, testMode bool) (str
 	folderPath := filepath.Join(sourceDir, folderName)
 
 	if _, err := os.Stat(folderPath); err == nil {
+		// Folder already exists — check if the file is already inside it
+		// (e.g. from a previous run that created the folder but didn't finish moving)
+		innerPath := filepath.Join(folderPath, fileName)
+		if _, err2 := os.Stat(innerPath); err2 == nil {
+			// File is already wrapped correctly; treat as success
+			return folderName, nil
+		}
 		return folderName, fmt.Errorf("folder already exists: %s", folderPath)
 	}
 
@@ -904,16 +904,19 @@ func flattenSeasonPack(sourcePath, destSeasonPath string, testMode bool, result 
 }
 
 func removeEmptyDirs(root string) {
+	var dirs []string
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || !d.IsDir() || path == root {
 			return nil
 		}
-		entries, _ := os.ReadDir(path)
-		if len(entries) == 0 {
-			os.Remove(path)
-		}
+		dirs = append(dirs, path)
 		return nil
 	})
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if entries, _ := os.ReadDir(dirs[i]); len(entries) == 0 {
+			os.Remove(dirs[i])
+		}
+	}
 }
 
 // processOneShowFolder moves a matched show folder into shows/{show}/{season}/.
@@ -926,6 +929,7 @@ func processOneShowFolder(sourceDir, destDir, folderName string, info *ShowInfo,
 	}
 
 	sourcePath := filepath.Join(sourceDir, folderName)
+	destFolderName := stripMediaExtensions(folderName)
 
 	if info.SeasonOnly && shouldOfferSeasonPackFlatten(sourcePath, destPath) {
 		if promptSeasonPackFlatten(showFolder, info.Season, sourcePath, destPath, testMode, reader) {
@@ -935,7 +939,7 @@ func processOneShowFolder(sourceDir, destDir, folderName string, info *ShowInfo,
 		}
 	}
 
-	destFolderPath := filepath.Join(destPath, folderName)
+	destFolderPath := filepath.Join(destPath, destFolderName)
 
 	var isDuplicate bool
 	var err error
@@ -948,7 +952,7 @@ func processOneShowFolder(sourceDir, destDir, folderName string, info *ShowInfo,
 		fmt.Printf("Error checking for duplicate: %v\n", err)
 	} else if isDuplicate {
 		dupeDir := filepath.Join(sourceDir, "dupe")
-		dupePath := filepath.Join(dupeDir, folderName)
+		dupePath := filepath.Join(dupeDir, destFolderName)
 		if _, err := os.Stat(dupeDir); os.IsNotExist(err) {
 			if !testMode {
 				if err := os.MkdirAll(dupeDir, 0755); err != nil {
@@ -1004,38 +1008,20 @@ func collectUnsureShows(sourceDir string, processed map[string]bool) []UnsureIte
 	if err != nil {
 		return nil
 	}
-	var unsure []UnsureItem
+	var files, dirs []UnsureItem
 	for _, entry := range entries {
 		name := entry.Name()
 		if processed[name] || shouldSkipShowsEntry(sourceDir, name, entry.IsDir()) {
 			continue
 		}
+		item := UnsureItem{SourceLabel: "shows", SourceDir: sourceDir, Name: name, Reason: "no show pattern matched"}
 		if entry.IsDir() {
-			continue
+			dirs = append(dirs, item)
+		} else {
+			files = append(files, item)
 		}
-		unsure = append(unsure, UnsureItem{
-			SourceLabel: "shows",
-			SourceDir:   sourceDir,
-			Name:        name,
-			Reason:      "no show pattern matched",
-		})
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if processed[name] || shouldSkipShowsEntry(sourceDir, name, entry.IsDir()) {
-			continue
-		}
-		if !entry.IsDir() {
-			continue
-		}
-		unsure = append(unsure, UnsureItem{
-			SourceLabel: "shows",
-			SourceDir:   sourceDir,
-			Name:        name,
-			Reason:      "no show pattern matched",
-		})
-	}
-	return unsure
+	return append(files, dirs...)
 }
 
 // processShows processes TV show folders with pattern matching and organization
@@ -1130,15 +1116,14 @@ func processShows(sourceDir, destDir string, testMode bool) (*ProcessResult, err
 	}
 
 	if testMode {
-		for folderName := range wrappedFolders {
-			found := false
-			for _, entry := range entries {
-				if entry.IsDir() && entry.Name() == folderName {
-					found = true
-					break
-				}
+		dirSet := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			if e.IsDir() {
+				dirSet[e.Name()] = true
 			}
-			if !found {
+		}
+		for folderName := range wrappedFolders {
+			if !dirSet[folderName] {
 				processShowDir(folderName)
 			}
 		}
@@ -1160,8 +1145,8 @@ func promptUnsureItems(config *Config, unsure []UnsureItem, testMode bool) {
 
 	if testMode {
 		fmt.Println("\n[TEST] Would prompt for each item (no input required):")
-		fmt.Println("  1 = move to shows destination (flat)")
-		fmt.Println("  2 = move to movies destination (flat)")
+		fmt.Println("  1 = move to shows destination (wrapped in folder if media file)")
+		fmt.Println("  2 = move to movies destination (wrapped in folder if media file)")
 		fmt.Println("  3 = move to shows source dupe/")
 		fmt.Println("  4 = skip (leave in place)")
 		return
@@ -1171,9 +1156,9 @@ func promptUnsureItems(config *Config, unsure []UnsureItem, testMode bool) {
 	for i, item := range unsure {
 		fmt.Printf("\n--- Item %d/%d: %s ---\n", i+1, len(unsure), item.Name)
 		fmt.Printf("Reason: %s\n", item.Reason)
-		fmt.Println("  1) Move to shows destination (flat)")
+		fmt.Println("  1) Move to shows destination")
 		if config.MoviesDestDir != "" {
-			fmt.Println("  2) Move to movies destination (flat)")
+			fmt.Println("  2) Move to movies destination")
 		} else {
 			fmt.Println("  2) (unavailable — moviesDestDir not configured)")
 		}
@@ -1195,13 +1180,13 @@ func promptUnsureItems(config *Config, unsure []UnsureItem, testMode bool) {
 				fmt.Println("showsDestDir not configured — skipping")
 				continue
 			}
-			applyUnsureMove(sourcePath, filepath.Join(config.ShowsDestDir, item.Name))
+			moveUnsureItemToDest(item, config.ShowsDestDir)
 		case "2":
 			if config.MoviesDestDir == "" {
 				fmt.Println("moviesDestDir not configured — skipping")
 				continue
 			}
-			applyUnsureMove(sourcePath, filepath.Join(config.MoviesDestDir, item.Name))
+			moveUnsureItemToDest(item, config.MoviesDestDir)
 		case "3":
 			dupeDir := filepath.Join(item.SourceDir, "dupe")
 			if err := os.MkdirAll(dupeDir, 0755); err != nil {
@@ -1215,6 +1200,85 @@ func promptUnsureItems(config *Config, unsure []UnsureItem, testMode bool) {
 			fmt.Println("Invalid choice — skipped.")
 		}
 	}
+}
+
+// moveUnsureItemToDest moves an unsure item to destDir, wrapping it in a folder first
+// if it is a single media file (extension stripped from the folder name).
+// For items with a "shows" label, it attempts to parse the show pattern and route
+// directly into destDir/ShowName/Season/ — falling back to destDir root if parsing fails.
+func moveUnsureItemToDest(item UnsureItem, destDir string) {
+	sourcePath := filepath.Join(item.SourceDir, item.Name)
+
+	// For shows items, try to parse the show pattern for proper routing.
+	if item.SourceLabel == "shows" {
+		info, _ := parseShowEntry(item.Name)
+		if info != nil {
+			entryName := item.Name
+			if isMediaFileName(item.Name) {
+				folderName := stripMediaExtensions(item.Name)
+				folderPath := filepath.Join(item.SourceDir, folderName)
+				innerPath := filepath.Join(folderPath, item.Name)
+				if _, err := os.Stat(innerPath); err == nil {
+					sourcePath = folderPath
+					entryName = folderName
+				} else if _, err := os.Stat(folderPath); os.IsNotExist(err) {
+					if err := os.MkdirAll(folderPath, 0755); err != nil {
+						fmt.Printf("Error creating folder '%s': %v\n", folderPath, err)
+						return
+					}
+					newFilePath := filepath.Join(folderPath, item.Name)
+					if err := os.Rename(sourcePath, newFilePath); err != nil {
+						os.Remove(folderPath)
+						fmt.Printf("Error moving '%s' into folder: %v\n", sourcePath, err)
+						return
+					}
+					fmt.Printf("Wrapped in folder: %s -> %s/\n", item.Name, folderName)
+					sourcePath = folderPath
+					entryName = folderName
+				} else {
+					fmt.Printf("Warning: folder '%s' already exists but file not inside — moving file directly\n", folderPath)
+				}
+			}
+			showDestPath := filepath.Join(destDir, info.ShowName)
+			if err := os.MkdirAll(showDestPath, 0755); err != nil {
+				fmt.Printf("Error creating show directory '%s': %v\n", showDestPath, err)
+				return
+			}
+			seasonDestPath := filepath.Join(showDestPath, info.Season)
+			if err := os.MkdirAll(seasonDestPath, 0755); err != nil {
+				fmt.Printf("Error creating season directory '%s': %v\n", seasonDestPath, err)
+				return
+			}
+			destFolderName := stripMediaExtensions(entryName)
+			applyUnsureMove(sourcePath, filepath.Join(seasonDestPath, destFolderName))
+			return
+		}
+	}
+
+	// Non-shows items or unparseable shows: wrap media files and move to destDir root.
+	if isMediaFileName(item.Name) {
+		folderName := stripMediaExtensions(item.Name)
+		folderPath := filepath.Join(item.SourceDir, folderName)
+		innerPath := filepath.Join(folderPath, item.Name)
+		if _, err := os.Stat(innerPath); err == nil {
+			applyUnsureMove(folderPath, filepath.Join(destDir, folderName))
+			return
+		}
+		if err := os.MkdirAll(folderPath, 0755); err != nil {
+			fmt.Printf("Error creating folder '%s': %v\n", folderPath, err)
+			return
+		}
+		newFilePath := filepath.Join(folderPath, item.Name)
+		if err := os.Rename(sourcePath, newFilePath); err != nil {
+			os.Remove(folderPath)
+			fmt.Printf("Error moving '%s' into folder: %v\n", sourcePath, err)
+			return
+		}
+		fmt.Printf("Wrapped in folder: %s -> %s/\n", item.Name, folderName)
+		applyUnsureMove(folderPath, filepath.Join(destDir, folderName))
+		return
+	}
+	applyUnsureMove(sourcePath, filepath.Join(destDir, item.Name))
 }
 
 func applyUnsureMove(sourcePath, destPath string) {
@@ -1333,38 +1397,25 @@ func processMovies(sourceDir, destDir string, testMode bool) (*ProcessResult, er
 		moveEntryToDest(sourceDir, destDir, entryName, result, testMode, logPrefix)
 	}
 
-	// In test mode, also process wrapped folders that don't exist physically yet
 	if testMode {
+		dirSet := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			if e.IsDir() {
+				dirSet[e.Name()] = true
+			}
+		}
 		for wrappedFolderName := range wrappedFolders {
-			// Check if this folder was already processed above (it might exist)
-			alreadyProcessed := false
-			for _, entry := range entries {
-				if entry.IsDir() && entry.Name() == wrappedFolderName {
-					alreadyProcessed = true
-					break
-				}
-			}
-			
-			if alreadyProcessed {
-				continue // Already processed in the loop above
-			}
-
-			// Process wrapped folder as if it were in the directory
-			entryName := wrappedFolderName
-			
-			// Skip system folders and hidden folders
-			if shouldIgnoreFile(entryName) {
+			if dirSet[wrappedFolderName] {
 				continue
 			}
-			
-			sourcePath := filepath.Join(sourceDir, entryName)
-			
-			// Skip folders inside .ignore folders or .ignore folder itself
-			if isInIgnoreFolder(sourcePath) || entryName == ".ignore" {
+			if shouldIgnoreFile(wrappedFolderName) {
 				continue
 			}
-
-			moveEntryToDest(sourceDir, destDir, entryName, result, testMode, "Would move folder")
+			sourcePath := filepath.Join(sourceDir, wrappedFolderName)
+			if isInIgnoreFolder(sourcePath) || wrappedFolderName == ".ignore" {
+				continue
+			}
+			moveEntryToDest(sourceDir, destDir, wrappedFolderName, result, testMode, "Would move folder")
 		}
 	}
 
@@ -1372,21 +1423,12 @@ func processMovies(sourceDir, destDir string, testMode bool) (*ProcessResult, er
 }
 
 func main() {
-	// First, check for config file path in command line arguments
-	configPath := "config.json"
-	for i, arg := range os.Args[1:] {
-		if arg == "-config" || arg == "--config" {
-			if i+1 < len(os.Args)-1 {
-				configPath = os.Args[i+2]
-				break
-			}
-		}
-	}
+	configPath := flag.String("config", "config.json", "path to config file")
+	flag.Parse()
 
-	// Load configuration from config.json - config file is required
-	config, err := loadConfig(configPath)
+	config, err := loadConfig(*configPath)
 	if err != nil {
-		fmt.Printf("Error: Could not load config file '%s': %v\n", configPath, err)
+		fmt.Printf("Error: Could not load config file '%s': %v\n", *configPath, err)
 		fmt.Println("\nPlease create a config.json file. See config.json.example for reference.")
 		os.Exit(1)
 	}
