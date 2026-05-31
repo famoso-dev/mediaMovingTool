@@ -3,5 +3,6 @@
   "showsDestDir": "./shows",
   "moviesSourceDir": "./downloads/movies",
   "moviesDestDir": "./movies",
-  "devMode": false
+  "devMode": false,
+  "skipFolders": ["sort", "incoming", "temp"]
 }

@@ -27,7 +27,8 @@ type Config struct {
 	MoviesSourceDir string `json:"moviesSourceDir"`
 	MoviesDestDir   string `json:"moviesDestDir"`
 
-	DevMode bool `json:"devMode"`
+	DevMode     bool     `json:"devMode"`
+	SkipFolders []string `json:"skipFolders"`
 }
 
 // loadConfig loads configuration from config.json - config file is required
@@ -726,7 +727,17 @@ func isShowsSourceReserved(name string) bool {
 	return name == ".ignore" || name == "dupe"
 }
 
-func shouldSkipShowsEntry(sourceDir, name string, isDir bool) bool {
+func isInSkipList(name string, skipFolders []string) bool {
+	lowerName := strings.ToLower(name)
+	for _, s := range skipFolders {
+		if strings.ToLower(s) == lowerName {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldSkipShowsEntry(sourceDir, name string, isDir bool, skipFolders []string) bool {
 	if shouldIgnoreFile(name) {
 		return true
 	}
@@ -735,6 +746,9 @@ func shouldSkipShowsEntry(sourceDir, name string, isDir bool) bool {
 		return true
 	}
 	if isDir && isShowsSourceReserved(name) {
+		return true
+	}
+	if isInSkipList(name, skipFolders) {
 		return true
 	}
 	return false
@@ -1003,7 +1017,7 @@ func processOneShowFolder(sourceDir, destDir, folderName string, info *ShowInfo,
 	result.MovedItems = append(result.MovedItems, fmt.Sprintf("%s -> %s", sourcePath, destFolderPath))
 }
 
-func collectUnsureShows(sourceDir string, processed map[string]bool) []UnsureItem {
+func collectUnsureShows(sourceDir string, processed map[string]bool, skipFolders []string) []UnsureItem {
 	entries, err := os.ReadDir(sourceDir)
 	if err != nil {
 		return nil
@@ -1011,7 +1025,7 @@ func collectUnsureShows(sourceDir string, processed map[string]bool) []UnsureIte
 	var files, dirs []UnsureItem
 	for _, entry := range entries {
 		name := entry.Name()
-		if processed[name] || shouldSkipShowsEntry(sourceDir, name, entry.IsDir()) {
+		if processed[name] || shouldSkipShowsEntry(sourceDir, name, entry.IsDir(), skipFolders) {
 			continue
 		}
 		item := UnsureItem{SourceLabel: "shows", SourceDir: sourceDir, Name: name, Reason: "no show pattern matched"}
@@ -1025,7 +1039,7 @@ func collectUnsureShows(sourceDir string, processed map[string]bool) []UnsureIte
 }
 
 // processShows processes TV show folders with pattern matching and organization
-func processShows(sourceDir, destDir string, testMode bool) (*ProcessResult, error) {
+func processShows(sourceDir, destDir string, testMode bool, skipFolders []string) (*ProcessResult, error) {
 	if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
 		return nil, fmt.Errorf("source directory '%s' does not exist", sourceDir)
 	}
@@ -1054,7 +1068,7 @@ func processShows(sourceDir, destDir string, testMode bool) (*ProcessResult, err
 			continue
 		}
 		fileName := entry.Name()
-		if shouldSkipShowsEntry(sourceDir, fileName, false) {
+		if shouldSkipShowsEntry(sourceDir, fileName, false, skipFolders) {
 			continue
 		}
 		info, ambiguous := parseShowEntry(fileName)
@@ -1089,7 +1103,7 @@ func processShows(sourceDir, destDir string, testMode bool) (*ProcessResult, err
 		if processed[folderName] {
 			return
 		}
-		if shouldSkipShowsEntry(sourceDir, folderName, true) {
+		if shouldSkipShowsEntry(sourceDir, folderName, true, skipFolders) {
 			return
 		}
 		info, ambiguous := parseShowEntry(folderName)
@@ -1129,7 +1143,7 @@ func processShows(sourceDir, destDir string, testMode bool) (*ProcessResult, err
 		}
 	}
 
-	result.Unsure = append(result.Unsure, collectUnsureShows(sourceDir, processed)...)
+	result.Unsure = append(result.Unsure, collectUnsureShows(sourceDir, processed, skipFolders)...)
 	return result, nil
 }
 
@@ -1294,7 +1308,7 @@ func applyUnsureMove(sourcePath, destPath string) {
 }
 
 // processMovies processes movie folders/files with simple moving (no pattern matching)
-func processMovies(sourceDir, destDir string, testMode bool) (*ProcessResult, error) {
+func processMovies(sourceDir, destDir string, testMode bool, skipFolders []string) (*ProcessResult, error) {
 	// Validate source directory exists
 	if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
 		return nil, fmt.Errorf("source directory '%s' does not exist", sourceDir)
@@ -1338,16 +1352,20 @@ func processMovies(sourceDir, destDir string, testMode bool) (*ProcessResult, er
 		}
 
 		fileName := entry.Name()
-		
+
 		// Skip system files and hidden files
 		if shouldIgnoreFile(fileName) {
 			continue
 		}
-		
+
 		filePath := filepath.Join(sourceDir, fileName)
-		
+
 		// Skip files inside .ignore folders
 		if isInIgnoreFolder(filePath) {
+			continue
+		}
+
+		if isInSkipList(fileName, skipFolders) {
 			continue
 		}
 
@@ -1377,16 +1395,20 @@ func processMovies(sourceDir, destDir string, testMode bool) (*ProcessResult, er
 		}
 
 		entryName := entry.Name()
-		
+
 		// Skip system folders and hidden folders
 		if shouldIgnoreFile(entryName) {
 			continue
 		}
-		
+
 		sourcePath := filepath.Join(sourceDir, entryName)
-		
+
 		// Skip folders inside .ignore folders or .ignore folder itself
 		if isInIgnoreFolder(sourcePath) || entryName == ".ignore" {
+			continue
+		}
+
+		if isInSkipList(entryName, skipFolders) {
 			continue
 		}
 
@@ -1446,7 +1468,7 @@ func main() {
 	// Process TV shows if directories are configured
 	if config.ShowsSourceDir != "" && config.ShowsDestDir != "" {
 		fmt.Println("=== Processing TV Shows ===")
-		showsResult, err := processShows(config.ShowsSourceDir, config.ShowsDestDir, testMode)
+		showsResult, err := processShows(config.ShowsSourceDir, config.ShowsDestDir, testMode, config.SkipFolders)
 		if err != nil {
 			fmt.Printf("Error processing shows: %v\n", err)
 		} else {
@@ -1462,7 +1484,7 @@ func main() {
 	// Process movies if directories are configured
 	if config.MoviesSourceDir != "" && config.MoviesDestDir != "" {
 		fmt.Println("=== Processing Movies ===")
-		moviesResult, err := processMovies(config.MoviesSourceDir, config.MoviesDestDir, testMode)
+		moviesResult, err := processMovies(config.MoviesSourceDir, config.MoviesDestDir, testMode, config.SkipFolders)
 		if err != nil {
 			fmt.Printf("Error processing movies: %v\n", err)
 		} else {

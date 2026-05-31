@@ -16,6 +16,7 @@ There is **no** separate “other” destination folder — items that do not ma
 - **Extension stripping**: Media extensions removed when wrapping single files (shows, movies, and unsure-item moves)
 - **Case-insensitive seasons**: Reuse existing season folder if case differs (`s01` vs `S01`)
 - **`.ignore` and system files**: Skipped automatically
+- **`skipFolders`**: Named folders/files excluded from both shows and movies processing (case-insensitive)
 - **`devMode`**: Preview all operations; print prompts without stdin; no file moves or directory creation
 
 ## Installation
@@ -43,6 +44,7 @@ cp config.json.example config.json
 | `moviesSourceDir` | Incoming movies (required with `moviesDestDir` for movies) |
 | `moviesDestDir` | Movie library (flat layout) |
 | `devMode` | `true` = test/preview mode (default `false`) |
+| `skipFolders` | Array of folder/file names to skip in both shows and movies source dirs (case-insensitive) |
 
 **Legacy:** `sourceDir` / `destDir` map to `showsSourceDir` / `showsDestDir` if the new fields are empty.
 
@@ -242,6 +244,7 @@ Set `"devMode": true` in `config.json`:
 ## Ignored paths and files
 
 - **`.ignore`**: Any path under a directory named `.ignore` is skipped (shows and movies).
+- **`skipFolders`**: Any file or folder whose name (case-insensitive) appears in the `skipFolders` config array is skipped in both shows and movies source dirs. Useful for staging folders like `sort`, `incoming`, or `temp` that live inside a source directory but should not be processed.
 - **System files**: `.DS_Store`, `Thumbs.db`, `desktop.ini`, `._*`, `~$*`, and other built-in patterns (see `shouldIgnoreFile` in `main.go`).
 
 ## Examples
