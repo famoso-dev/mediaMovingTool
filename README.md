@@ -7,10 +7,11 @@ There is **no** separate “other” destination folder — items that do not ma
 ## Features
 
 - **TV shows**: Dot-style and release-style name parsing; two-pass wrap-then-move
-- **Show library matching**: Reuse existing folders in `showsDestDir` (exact, normalized, fuzzy, dot-series year stripping)
-- **Interactive prompts**: Multiple show-folder matches, fuzzy merge Y/N, season-pack flatten, end-of-run unsure items
+- **Show library matching**: Reuse existing folders in `showsDestDir` (exact, normalized, fuzzy, dot-series year stripping, release yearless matching)
+- **Interactive prompts**: Multiple show-folder matches, fuzzy merge Y/N, release year folder choice, quality-tag confirm, season-pack flatten, end-of-run unsure items
+- **Performance**: Show library indexed once per run; directory listings and resolved show names are cached
 - **Season packs**: Dot (`Show.Name.S01.…`) and release (`My Show (2020) S01 …`) season-only detection; optional flatten into season folder
-- **Movies**: No pattern matching; wrap single files, move folders/files flat to destination
+- **Movies**: No pattern matching; wrap loose **media** files only, move folders/files flat to destination
 - **Duplicates (shows)**: Same episode or season pack in dest → move source entry to `showsSourceDir/dupe/`
 - **Duplicates (movies)**: Exact destination path exists → skip with warning
 - **Extension stripping**: Media extensions removed when wrapping single files (shows, movies, and unsure-item moves)
@@ -73,10 +74,12 @@ Patterns are tried in order; ambiguous names (multiple patterns disagree) are no
 | Pattern | Example | Parsed show folder | Season |
 |---------|---------|-------------------|--------|
 | Episode | `Show.Name.S01E12` | `Show.Name` | `S01` |
+| Episode (dot-separated) | `Show.s01.e03.1080p.mkv` | `Show` | `S01` (`S01E03`) |
 | Episode + tags | `Show.Name.S02E14.1080p.mkv` | `Show.Name` | `S02` |
 | Season pack | `Series.S01.1080p.WEB-DL` | `Series` | `S01` |
 
 - `S##E##` and `s##e##` are case-insensitive.
+- Dot-separated `S##.E##` / `s##.e##` is treated as a single episode token (`S01E03`).
 - Text after the episode or season token is allowed (quality, group, etc.).
 - Parsing uses the basename with **media extensions stripped** first (e.g. `.mkv`, `.mp4`).
 
@@ -89,7 +92,7 @@ Patterns are tried in order; ambiguous names (multiple patterns disagree) are no
 | Year + season pack | `My Show (2024) S01 (1080p …)` | `My Show (2024)` | `S01` |
 | Season pack, no year | `My Show S01 …` | `My Show` | `S01` |
 
-Release-style show folders **keep `(year)` in the name** when present.
+Release-style show folders **keep `(year)` in the name** when present, but only **`(19xx)`** and **`(20xx)`** are treated as years. Parenthetical tags like `(1080p)` or `(10bit)` are quality/format markers, not years.
 
 ### Destination layout (shows)
 
@@ -124,6 +127,33 @@ For dot-style names with an embedded year segment (e.g. `Series.Name.2024.S05E06
 
 This rule only applies when the year-stripped base folder is already in the library.
 
+### Release-style year matching
+
+For release names with a year suffix (e.g. `My Show (2020)`):
+
+1. **Exact match** — if `showsDestDir/My Show (2020)/` exists, use it.
+2. **Yearless match** — if `showsDestDir/My Show/` exists (but not the year variant), reuse the yearless folder automatically.
+3. **No match** — prompt whether to create/use the yearless name instead, with an example path:
+
+```text
+No show folder found for "My Show (2020)".
+Without the year, the library path would look like:
+  shows/My Show/S01/episode-folder
+Use folder name "My Show" (without year) instead of "My Show (2020)"? [Y/N]:
+```
+
+In `devMode`, this prompt is described but not executed; preview paths keep the parsed show name.
+
+### Quality tags in show names
+
+Tokens like `(1080p)`, `(720p)`, and `(10bit)` — digits with trailing letters — are treated as quality/format tags, not years. When one appears in a show folder name during resolution, the tool asks for confirmation:
+
+```text
+(1080p) in "My Show (1080p)" looks like a quality/format tag (not a year). Treat as quality? [Y/N]:
+```
+
+Pressing Enter defaults to **Y**.
+
 ### Normalized keys (auto-merge, same style only)
 
 | Style | Normalization | Example keys |
@@ -143,7 +173,9 @@ This rule only applies when the year-stripped base folder is already in the libr
 
 - Prints `[TEST]` lines for what would be prompted.
 - Does **not** read stdin.
-- Dot-series: logs if an existing base folder would be used; preview paths keep the **parsed** show name.
+- Dot-series / release yearless: logs if an existing base folder would be used; preview paths keep the **parsed** show name.
+- Release year (no library match): logs the yearless example path and prompt; uses parsed name for preview.
+- Quality tags: logs the confirm prompt; assumes quality in preview.
 - Fuzzy / multi-match: does not merge; uses parsed name for preview moves.
 - Season flatten: logs prompt; does not flatten.
 - Unsure: lists items and choices only; nothing moved.
@@ -170,6 +202,12 @@ Show.Name exists — move "My Show (2020)" into that folder? [Y/N]:
 
 ```text
 Using existing show folder: Show.Name (dot-series match for Show.Name.2024)
+```
+
+**Release yearless (non-dev):**
+
+```text
+Using existing show folder: My Show (release match for My Show (2020))
 ```
 
 ## Season packs
@@ -210,7 +248,7 @@ After the summary, remaining shows-source entries that were **not processed**:
 
 Per item (interactive, not in `devMode`):
 
-1. Move to `showsDestDir` — if the item matches a show pattern it is routed to `showsDestDir/{ShowName}/{Season}/` (media files wrapped, extension stripped); otherwise deposited at the dest root
+1. Move to `showsDestDir` — uses the same show-folder matching as the main run (including release year and fuzzy rules). If the item matches a show pattern — including dot-separated `S##.E##` as a fallback — it is routed to `showsDestDir/{ShowName}/{Season}/` (media files wrapped, extension stripped); otherwise deposited at the dest root
 2. Move to `moviesDestDir` — media files are wrapped in a folder (extension stripped); folders move as-is; unavailable if not configured
 3. Move to `showsSourceDir/dupe/` (flat, no wrapping)
 4. Skip (leave in source)
@@ -218,7 +256,7 @@ Per item (interactive, not in `devMode`):
 ## Movies
 
 - **No** show-style pattern matching.
-- **Pass 1**: Every non-ignored file in `moviesSourceDir` is wrapped: `Movie.Title.2024.1080p.mkv` → folder `Movie.Title.2024.1080p/`.
+- **Pass 1**: Every non-ignored **media** file in `moviesSourceDir` is wrapped: `Movie.Title.2024.1080p.mkv` → folder `Movie.Title.2024.1080p/`. Non-media files (e.g. `.nfo`, `.txt`) are left in place.
 - **Pass 2**: Every top-level folder (including wrapped) is moved to `moviesDestDir/{sameName}/` (flat).
 - If `moviesDestDir/{name}` already exists → **warning and skip** (not moved to dupe).
 - Skips: `.ignore`, system/hidden files, paths inside `.ignore`.
@@ -274,6 +312,15 @@ shows/
 ### Shows — wrap single file
 
 `Series.S01E05.mkv` → wrap `Series.S01E05/` → `shows/Series/S01/Series.S01E05/`.
+
+### Shows — dot-separated episode
+
+`Show.s01.e03.1080p.random.mkv` → wrap `Show.s01.e03.1080p.random/` → `shows/Show/S01/Show.s01.e03.1080p.random/` (parsed as `S01E03`).
+
+### Shows — release yearless match
+
+Library has `My Show/`. Incoming `My Show (2020) S02E08 …` → uses `My Show/`.  
+If neither `My Show/` nor `My Show (2020)/` exists → prompted with yearless example path.
 
 ### Shows — duplicate episode
 

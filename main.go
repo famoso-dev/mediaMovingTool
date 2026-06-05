@@ -89,12 +89,18 @@ type ShowInfo struct {
 var (
 	// Dot style: Show.Name.S01E08.extra
 	showDotPattern = regexp.MustCompile(`^(.+?)\.([Ss]\d{1,2}[Ee]\d{1,2}).*$`)
-	// Release style: Show Name (2019) S02E08 ...
-	showReleaseYearEpisodePattern = regexp.MustCompile(`^(.+?)\s+\((\d{4})\)\s+([Ss]\d{1,2}[Ee]\d{1,2})\b`)
+	// Dot style with separated season/episode: Show.Name.S01.E08.extra
+	showDotSeparatedEpisodePattern = regexp.MustCompile(`^(.+?)\.([Ss]\d{1,2})\.([Ee]\d{1,2}).*$`)
+	// Release style: Show Name (2019) S02E08 ... — year must be 19xx/20xx (not 1080 etc.)
+	showReleaseYearEpisodePattern = regexp.MustCompile(`^(.+?)\s+\(((?:19|20)\d{2})\)\s+([Ss]\d{1,2}[Ee]\d{1,2})\b`)
 	showReleaseEpisodePattern     = regexp.MustCompile(`^(.+?)\s+([Ss]\d{1,2}[Ee]\d{1,2})\b`)
 	// Season pack: Show Name (2024) S01 (1080p...) or Show Name (2024) S01[TAoE]
-	showReleaseYearSeasonPattern = regexp.MustCompile(`^(.+?)\s+\((\d{4})\)\s+([Ss]\d{1,2})(?:\s|\(|\[|$)`)
+	showReleaseYearSeasonPattern = regexp.MustCompile(`^(.+?)\s+\(((?:19|20)\d{2})\)\s+([Ss]\d{1,2})(?:\s|\(|\[|$)`)
 	showReleaseSeasonPattern     = regexp.MustCompile(`^(.+?)\s+([Ss]\d{1,2})(?:\s|\(|\[|$)`)
+	// Release show folder suffix: "My Show (2020)"
+	releaseYearSuffixPattern = regexp.MustCompile(`^(.+?)\s+\(((?:19|20)\d{2})\)$`)
+	// Quality tags in parens: (1080p), (10bit) — digits with trailing letters
+	qualityParenPattern = regexp.MustCompile(`\((\d+[a-zA-Z][a-zA-Z0-9]*)\)`)
 	// Dot season pack: Show.Name.S01.extra or Show.Name.S01.
 	showDotSeasonPattern = regexp.MustCompile(`^(.+?)\.([Ss]\d{1,2})(?:\.|\s|\[|$)`)
 	seasonFromTokenPattern       = regexp.MustCompile(`^([Ss]\d{1,2})`)
@@ -174,29 +180,39 @@ func parseShowEntry(name string) (*ShowInfo, bool) {
 	parseName := stripMediaExtensions(name)
 	var candidates []*ShowInfo
 
-	if m := showDotPattern.FindStringSubmatch(parseName); len(m) == 3 {
-		candidates = append(candidates, showInfoFromToken(m[1], m[2], false))
-	}
-	if m := showDotSeasonPattern.FindStringSubmatch(parseName); len(m) == 3 {
-		if !showDotPattern.MatchString(parseName) {
-			candidates = append(candidates, showInfoFromToken(m[1], m[2], true))
+	// Dot-style names use "." separators; release-style requires spaces before S## tokens.
+	if strings.Contains(parseName, ".") {
+		if m := showDotPattern.FindStringSubmatch(parseName); len(m) == 3 {
+			candidates = append(candidates, showInfoFromToken(m[1], m[2], false))
+		}
+		if m := showDotSeparatedEpisodePattern.FindStringSubmatch(parseName); len(m) == 4 {
+			if !showDotPattern.MatchString(parseName) {
+				candidates = append(candidates, showInfoFromSeparatedEpisode(m[1], m[2], m[3]))
+			}
+		}
+		if m := showDotSeasonPattern.FindStringSubmatch(parseName); len(m) == 3 {
+			if !showDotPattern.MatchString(parseName) && !showDotSeparatedEpisodePattern.MatchString(parseName) {
+				candidates = append(candidates, showInfoFromToken(m[1], m[2], true))
+			}
 		}
 	}
-	if m := showReleaseYearEpisodePattern.FindStringSubmatch(name); len(m) == 4 {
-		show := strings.TrimSpace(m[1]) + " (" + m[2] + ")"
-		candidates = append(candidates, showInfoFromToken(show, m[3], false))
-	}
-	if m := showReleaseEpisodePattern.FindStringSubmatch(name); len(m) == 3 {
-		candidates = append(candidates, showInfoFromToken(strings.TrimSpace(m[1]), m[2], false))
-	}
-	if m := showReleaseYearSeasonPattern.FindStringSubmatch(name); len(m) == 4 {
-		show := strings.TrimSpace(m[1]) + " (" + m[2] + ")"
-		candidates = append(candidates, showInfoFromToken(show, m[3], true))
-	}
-	if m := showReleaseSeasonPattern.FindStringSubmatch(name); len(m) == 3 {
-		// Avoid matching episode rows already captured (S01E08 has S01 before space)
-		if !showReleaseYearEpisodePattern.MatchString(name) && !showReleaseEpisodePattern.MatchString(name) {
-			candidates = append(candidates, showInfoFromToken(strings.TrimSpace(m[1]), m[2], true))
+	if strings.Contains(name, " ") {
+		if m := showReleaseYearEpisodePattern.FindStringSubmatch(name); len(m) == 4 {
+			show := strings.TrimSpace(m[1]) + " (" + m[2] + ")"
+			candidates = append(candidates, showInfoFromToken(show, m[3], false))
+		}
+		if m := showReleaseEpisodePattern.FindStringSubmatch(name); len(m) == 3 {
+			candidates = append(candidates, showInfoFromToken(strings.TrimSpace(m[1]), m[2], false))
+		}
+		if m := showReleaseYearSeasonPattern.FindStringSubmatch(name); len(m) == 4 {
+			show := strings.TrimSpace(m[1]) + " (" + m[2] + ")"
+			candidates = append(candidates, showInfoFromToken(show, m[3], true))
+		}
+		if m := showReleaseSeasonPattern.FindStringSubmatch(name); len(m) == 3 {
+			// Avoid matching episode rows already captured (S01E08 has S01 before space)
+			if !showReleaseYearEpisodePattern.MatchString(name) && !showReleaseEpisodePattern.MatchString(name) {
+				candidates = append(candidates, showInfoFromToken(strings.TrimSpace(m[1]), m[2], true))
+			}
 		}
 	}
 
@@ -210,6 +226,32 @@ func parseShowEntry(name string) (*ShowInfo, bool) {
 		}
 	}
 	return first, false
+}
+
+func showInfoFromSeparatedEpisode(showName, seasonPart, episodePart string) *ShowInfo {
+	seasonMatch := seasonFromTokenPattern.FindString(seasonPart)
+	if seasonMatch == "" {
+		return nil
+	}
+	return &ShowInfo{
+		ShowName:      strings.TrimSpace(showName),
+		Season:        strings.ToUpper(seasonMatch),
+		SeasonEpisode: strings.ToUpper(seasonMatch + episodePart),
+		SeasonOnly:    false,
+	}
+}
+
+// parseShowEntryForUnsure parses show metadata for unsure-item routing. Uses the
+// standard parser first, then falls back to dot-separated S##.E## when needed.
+func parseShowEntryForUnsure(name string) *ShowInfo {
+	if info, ambiguous := parseShowEntry(name); info != nil && !ambiguous {
+		return info
+	}
+	parseName := stripMediaExtensions(name)
+	if m := showDotSeparatedEpisodePattern.FindStringSubmatch(parseName); len(m) == 4 {
+		return showInfoFromSeparatedEpisode(m[1], m[2], m[3])
+	}
+	return nil
 }
 
 func showInfoFromToken(showName, seasonToken string, seasonOnly bool) *ShowInfo {
@@ -251,6 +293,103 @@ func normalizeShowName(name string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// releaseShowBaseAndYear splits a release-style folder name into base + year.
+// e.g. "My Show (2020)" -> "My Show", "2020".
+func releaseShowBaseAndYear(showName string) (base, year string, ok bool) {
+	m := releaseYearSuffixPattern.FindStringSubmatch(strings.TrimSpace(showName))
+	if len(m) != 3 {
+		return "", "", false
+	}
+	return strings.TrimSpace(m[1]), m[2], true
+}
+
+// isQualityToken reports whether a token looks like a video/format tag (1080p, 10bit).
+func isQualityToken(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	hasDigit, hasLetter := false, false
+	for i, r := range token {
+		if r >= '0' && r <= '9' {
+			hasDigit = true
+		} else if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			hasLetter = true
+			if i == 0 {
+				return false
+			}
+		} else {
+			return false
+		}
+	}
+	return hasDigit && hasLetter
+}
+
+func findQualityParenToken(showName string) (string, bool) {
+	m := qualityParenPattern.FindStringSubmatch(showName)
+	if len(m) != 2 || !isQualityToken(m[1]) {
+		return "", false
+	}
+	return m[1], true
+}
+
+// existingReleaseYearlessFolder returns the dest folder when parsedShowName is a
+// release-style year variant (My Show (2020)) and showsDestDir already has the
+// base folder (My Show). Only matches an existing folder; never creates one.
+func existingReleaseYearlessFolder(idx *showLibraryIndex, parsedShowName string) (string, bool) {
+	base, _, ok := releaseShowBaseAndYear(parsedShowName)
+	if !ok {
+		return "", false
+	}
+	actual, exists := idx.exists(base)
+	if !exists {
+		return "", false
+	}
+	return actual, true
+}
+
+// promptReleaseYearFolder asks whether to create/use the yearless release name.
+func promptReleaseYearFolder(destDir, parsedShowName, baseName string, testMode bool, reader *bufio.Reader) string {
+	examplePath := filepath.ToSlash(filepath.Join(destDir, baseName, "S01", "episode-folder"))
+	if testMode {
+		fmt.Printf("[TEST] No show folder for %q — would prompt: use %q without year?\n", parsedShowName, baseName)
+		fmt.Printf("[TEST]   Example path without year: %s\n", examplePath)
+		fmt.Printf("[TEST]   Using %q for preview\n", parsedShowName)
+		return parsedShowName
+	}
+	fmt.Printf("\nNo show folder found for %q.\n", parsedShowName)
+	fmt.Printf("Without the year, the library path would look like:\n  %s\n", examplePath)
+	fmt.Printf("Use folder name %q (without year) instead of %q? [Y/N]: ", baseName, parsedShowName)
+	line, err := readPromptLine(reader)
+	if err != nil {
+		fmt.Printf("Error reading input: %v — using %q\n", err, parsedShowName)
+		return parsedShowName
+	}
+	if isYesResponse(line) {
+		fmt.Printf("Using show folder without year: %s\n", baseName)
+		return baseName
+	}
+	return parsedShowName
+}
+
+// promptQualityTagConfirm asks whether a parenthetical token is a quality tag, not a year.
+func promptQualityTagConfirm(token, showName string, testMode bool, reader *bufio.Reader) bool {
+	if testMode {
+		fmt.Printf("[TEST] (%s) in %q looks like a quality tag — would prompt to confirm [Y/N]\n", token, showName)
+		return true
+	}
+	fmt.Printf("(%s) in %q looks like a quality/format tag (not a year). Treat as quality? [Y/N]: ", token, showName)
+	line, err := readPromptLine(reader)
+	if err != nil {
+		fmt.Printf("Error reading input: %v — assuming quality tag\n", err)
+		return true
+	}
+	if line == "" {
+		return true
+	}
+	return isYesResponse(line)
+}
+
 // stripEmbeddedDotYears removes dotted .YYYY. segments from dot-style show names.
 // e.g. "The.Boys.2026" -> "The.Boys". Names without embedded years are unchanged.
 func stripEmbeddedDotYears(name string) string {
@@ -272,10 +411,97 @@ func stripEmbeddedDotYears(name string) string {
 	return s
 }
 
+// fsCache memoizes directory listings to avoid repeated ReadDir calls per run.
+type fsCache struct {
+	dirs map[string][]os.DirEntry
+}
+
+func newFSCache() *fsCache {
+	return &fsCache{dirs: make(map[string][]os.DirEntry)}
+}
+
+func (c *fsCache) readDir(path string) ([]os.DirEntry, error) {
+	if entries, ok := c.dirs[path]; ok {
+		return entries, nil
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	c.dirs[path] = entries
+	return entries, nil
+}
+
+func (c *fsCache) invalidate(path string) {
+	delete(c.dirs, path)
+}
+
+// showLibraryIndex caches existing show folders under showsDestDir for O(1) lookups.
+type showLibraryIndex struct {
+	folders []string
+	byLower map[string]string
+	byNorm  map[string][]string
+}
+
+func buildShowLibraryIndex(destDir string, cache *fsCache) *showLibraryIndex {
+	idx := &showLibraryIndex{
+		byLower: make(map[string]string),
+		byNorm:  make(map[string][]string),
+	}
+	entries, err := cache.readDir(destDir)
+	if err != nil {
+		return idx
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		idx.folders = append(idx.folders, name)
+		lower := strings.ToLower(name)
+		if _, exists := idx.byLower[lower]; !exists {
+			idx.byLower[lower] = name
+		}
+		norm := normalizeShowName(name)
+		if norm != "" {
+			idx.byNorm[norm] = append(idx.byNorm[norm], name)
+		}
+	}
+	return idx
+}
+
+func (idx *showLibraryIndex) addFolder(name string) {
+	if idx == nil {
+		return
+	}
+	lower := strings.ToLower(name)
+	if existing, ok := idx.byLower[lower]; ok && existing == name {
+		return
+	}
+	idx.folders = append(idx.folders, name)
+	if _, exists := idx.byLower[lower]; !exists {
+		idx.byLower[lower] = name
+	}
+	norm := normalizeShowName(name)
+	if norm != "" {
+		idx.byNorm[norm] = append(idx.byNorm[norm], name)
+	}
+}
+
+func (idx *showLibraryIndex) exists(desiredName string) (actual string, ok bool) {
+	if idx == nil {
+		return "", false
+	}
+	if actual, ok := idx.byLower[strings.ToLower(desiredName)]; ok {
+		return actual, true
+	}
+	return "", false
+}
+
 // existingDotSeriesFolder returns the dest folder name when parsedShowName is a
 // dot-style year variant (The.Boys.2026) and showsDestDir already has the base
 // series folder (The.Boys). Only matches an existing folder; never creates one.
-func existingDotSeriesFolder(destDir, parsedShowName string) (string, bool) {
+func existingDotSeriesFolder(idx *showLibraryIndex, parsedShowName string) (string, bool) {
 	if !strings.Contains(parsedShowName, ".") {
 		return "", false
 	}
@@ -283,7 +509,7 @@ func existingDotSeriesFolder(destDir, parsedShowName string) (string, bool) {
 	if canonical == parsedShowName {
 		return "", false
 	}
-	actual, ok := showFolderExists(destDir, canonical)
+	actual, ok := idx.exists(canonical)
 	if !ok {
 		return "", false
 	}
@@ -292,21 +518,9 @@ func existingDotSeriesFolder(destDir, parsedShowName string) (string, bool) {
 
 // showFolderExists reports whether a show folder exists under destDir (case-insensitive).
 func showFolderExists(destDir, desiredName string) (actual string, ok bool) {
-	exactPath := filepath.Join(destDir, desiredName)
-	if info, err := os.Stat(exactPath); err == nil && info.IsDir() {
-		return desiredName, true
-	}
-	entries, err := os.ReadDir(destDir)
-	if err != nil {
-		return "", false
-	}
-	desiredLower := strings.ToLower(desiredName)
-	for _, entry := range entries {
-		if entry.IsDir() && strings.ToLower(entry.Name()) == desiredLower {
-			return entry.Name(), true
-		}
-	}
-	return "", false
+	cache := newFSCache()
+	idx := buildShowLibraryIndex(destDir, cache)
+	return idx.exists(desiredName)
 }
 
 // levenshteinDistance returns the edit distance between two strings.
@@ -368,19 +582,14 @@ type showFolderCandidate struct {
 }
 
 // findShowFolderCandidates lists existing show folders matching parsedShowName.
-func findShowFolderCandidates(destDir, parsedShowName string) []showFolderCandidate {
-	entries, err := os.ReadDir(destDir)
-	if err != nil {
+func findShowFolderCandidates(idx *showLibraryIndex, parsedShowName string) []showFolderCandidate {
+	if idx == nil || len(idx.folders) == 0 {
 		return nil
 	}
 	parsedNorm := normalizeShowName(parsedShowName)
 	var out []showFolderCandidate
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		existing := entry.Name()
+	for _, existing := range idx.folders {
 		score := showNameSimilarity(parsedShowName, existing)
 		normMatch := parsedNorm != "" && normalizeShowName(existing) == parsedNorm
 		if strings.EqualFold(existing, parsedShowName) {
@@ -406,7 +615,9 @@ func findShowFolderCandidates(destDir, parsedShowName string) []showFolderCandid
 
 // findBestFuzzyShowFolder returns the top candidate if any (for tests).
 func findBestFuzzyShowFolder(destDir, parsedShowName string) (folder string, score float64, found bool) {
-	candidates := findShowFolderCandidates(destDir, parsedShowName)
+	cache := newFSCache()
+	idx := buildShowLibraryIndex(destDir, cache)
+	candidates := findShowFolderCandidates(idx, parsedShowName)
 	if len(candidates) == 0 {
 		return "", 0, false
 	}
@@ -481,47 +692,84 @@ func promptMergeShowFolder(parsedShowName, match string, score float64, testMode
 
 // resolveShowDestFolder searches showsDestDir for an existing show folder before creating one.
 func resolveShowDestFolder(destDir, parsedShowName string, testMode bool, reader *bufio.Reader) string {
-	if folder, ok := existingDotSeriesFolder(destDir, parsedShowName); ok {
-		if testMode {
-			fmt.Printf("[TEST] Dot-series folder %q exists — would use it for %q (preview path keeps %q)\n",
-				folder, parsedShowName, parsedShowName)
-		} else {
-			fmt.Printf("Using existing show folder: %s (dot-series match for %s)\n", folder, parsedShowName)
+	cache := newFSCache()
+	idx := buildShowLibraryIndex(destDir, cache)
+	return resolveShowDestFolderWithIndex(idx, destDir, parsedShowName, nil, testMode, reader)
+}
+
+func resolveShowDestFolderWithIndex(idx *showLibraryIndex, destDir, parsedShowName string, resolvedCache map[string]string, testMode bool, reader *bufio.Reader) string {
+	if resolvedCache != nil {
+		if folder, ok := resolvedCache[parsedShowName]; ok {
 			return folder
 		}
 	}
 
+	var resolved string
+	defer func() {
+		if resolvedCache != nil && resolved != "" {
+			resolvedCache[parsedShowName] = resolved
+		}
+	}()
+
+	if folder, ok := existingDotSeriesFolder(idx, parsedShowName); ok {
+		if testMode {
+			fmt.Printf("[TEST] Dot-series folder %q exists — would use it for %q (preview path keeps %q)\n",
+				folder, parsedShowName, parsedShowName)
+			resolved = parsedShowName
+			return resolved
+		}
+		fmt.Printf("Using existing show folder: %s (dot-series match for %s)\n", folder, parsedShowName)
+		resolved = folder
+		return resolved
+	}
+
+	if token, ok := findQualityParenToken(parsedShowName); ok {
+		promptQualityTagConfirm(token, parsedShowName, testMode, reader)
+	}
+
 	// Fast path: exact or case-insensitive match — skip fuzzy scan entirely.
-	if actual, ok := showFolderExists(destDir, parsedShowName); ok {
+	if actual, ok := idx.exists(parsedShowName); ok {
 		if actual != parsedShowName {
 			fmt.Printf("Using existing show folder: %s (matches %s)\n", actual, parsedShowName)
 		}
-		return actual
+		resolved = actual
+		return resolved
+	}
+
+	// Release-style year: reuse an existing yearless folder (My Show) for My Show (2020).
+	if folder, ok := existingReleaseYearlessFolder(idx, parsedShowName); ok {
+		if testMode {
+			fmt.Printf("[TEST] Release folder %q exists — would use it for %q (preview path keeps %q)\n",
+				folder, parsedShowName, parsedShowName)
+			resolved = parsedShowName
+			return resolved
+		}
+		fmt.Printf("Using existing show folder: %s (release match for %s)\n", folder, parsedShowName)
+		resolved = folder
+		return resolved
 	}
 
 	// Normalized match: same show name after normalization (e.g. different year suffix).
-	// O(n) string comparisons only — no Levenshtein yet.
 	parsedNorm := normalizeShowName(parsedShowName)
 	if parsedNorm != "" {
-		entries, _ := os.ReadDir(destDir)
-		var normMatches []showFolderCandidate
-		for _, entry := range entries {
-			if entry.IsDir() && normalizeShowName(entry.Name()) == parsedNorm {
-				normMatches = append(normMatches, showFolderCandidate{FolderName: entry.Name(), Score: 1, NormMatch: true})
+		matches := idx.byNorm[parsedNorm]
+		if len(matches) == 1 {
+			fmt.Printf("Using existing show folder: %s (matches %s)\n", matches[0], parsedShowName)
+			resolved = matches[0]
+			return resolved
+		}
+		if len(matches) > 1 {
+			normMatches := make([]showFolderCandidate, len(matches))
+			for i, name := range matches {
+				normMatches[i] = showFolderCandidate{FolderName: name, Score: 1, NormMatch: true}
 			}
-		}
-		if len(normMatches) == 1 {
-			fmt.Printf("Using existing show folder: %s (matches %s)\n", normMatches[0].FolderName, parsedShowName)
-			return normMatches[0].FolderName
-		}
-		if len(normMatches) > 1 {
-			return promptShowFolderChoice(parsedShowName, normMatches, testMode, reader)
+			resolved = promptShowFolderChoice(parsedShowName, normMatches, testMode, reader)
+			return resolved
 		}
 	}
 
 	// Fuzzy scan: only reached when no direct or normalized match exists.
-	// Runs Levenshtein against each library folder.
-	candidates := findShowFolderCandidates(destDir, parsedShowName)
+	candidates := findShowFolderCandidates(idx, parsedShowName)
 	var autoMatches, promptMatches []showFolderCandidate
 	for _, c := range candidates {
 		if c.NormMatch {
@@ -534,32 +782,42 @@ func resolveShowDestFolder(destDir, parsedShowName string, testMode bool, reader
 		}
 	}
 
-	// High-confidence (> 60%): auto-assume same show, no prompt.
 	if len(autoMatches) > 0 {
 		best := autoMatches[0]
 		if testMode {
 			fmt.Printf("[TEST] Auto-matched show folder %q (%.0f%%) for %q — would use it\n",
 				best.FolderName, best.Score*100, parsedShowName)
-			return parsedShowName
+			resolved = parsedShowName
+			return resolved
 		}
 		fmt.Printf("Using existing show folder: %s (%.0f%% match for %s)\n",
 			best.FolderName, best.Score*100, parsedShowName)
-		return best.FolderName
+		resolved = best.FolderName
+		return resolved
 	}
 
-	// Low-confidence (50-60%): prompt.
 	if len(promptMatches) > 1 {
-		return promptShowFolderChoice(parsedShowName, promptMatches, testMode, reader)
+		resolved = promptShowFolderChoice(parsedShowName, promptMatches, testMode, reader)
+		return resolved
 	}
 	if len(promptMatches) == 1 {
 		if promptMergeShowFolder(parsedShowName, promptMatches[0].FolderName, promptMatches[0].Score, testMode, reader) {
 			fmt.Printf("Using existing show folder: %s\n", promptMatches[0].FolderName)
-			return promptMatches[0].FolderName
+			resolved = promptMatches[0].FolderName
+			return resolved
 		}
-		return parsedShowName
+		resolved = parsedShowName
+		return resolved
 	}
 
-	return parsedShowName
+	// Release with year but no library match — offer yearless folder name.
+	if base, _, hasYear := releaseShowBaseAndYear(parsedShowName); hasYear {
+		resolved = promptReleaseYearFolder(destDir, parsedShowName, base, testMode, reader)
+		return resolved
+	}
+
+	resolved = parsedShowName
+	return resolved
 }
 
 func isYesResponse(line string) bool {
@@ -574,14 +832,22 @@ func isYesResponse(line string) bool {
 // findCaseInsensitiveDir checks if a directory exists with case-insensitive matching
 // Returns the actual directory name if found, or the desired name if not found
 func findCaseInsensitiveDir(parentDir, desiredName string) (string, error) {
-	// First check if exact match exists
+	return findCaseInsensitiveDirCached(parentDir, desiredName, nil)
+}
+
+func findCaseInsensitiveDirCached(parentDir, desiredName string, cache *fsCache) (string, error) {
 	exactPath := filepath.Join(parentDir, desiredName)
 	if info, err := os.Stat(exactPath); err == nil && info.IsDir() {
 		return desiredName, nil
 	}
 
-	// Read parent directory to check for case-insensitive matches
-	entries, err := os.ReadDir(parentDir)
+	var entries []os.DirEntry
+	var err error
+	if cache != nil {
+		entries, err = cache.readDir(parentDir)
+	} else {
+		entries, err = os.ReadDir(parentDir)
+	}
 	if err != nil {
 		return desiredName, err
 	}
@@ -589,25 +855,31 @@ func findCaseInsensitiveDir(parentDir, desiredName string) (string, error) {
 	desiredLower := strings.ToLower(desiredName)
 	for _, entry := range entries {
 		if entry.IsDir() && strings.ToLower(entry.Name()) == desiredLower {
-			// Found a case-insensitive match, return the actual name
 			return entry.Name(), nil
 		}
 	}
 
-	// No match found, return desired name
 	return desiredName, nil
 }
 
 // checkEpisodeExists checks if any folder with the same season/episode pattern already exists
 // in the destination season directory. Returns true if a duplicate is found, false otherwise.
 func checkEpisodeExists(destPath, seasonEpisode string) (bool, error) {
-	// If destination directory doesn't exist yet, no duplicate can exist
+	return checkEpisodeExistsCached(destPath, seasonEpisode, nil)
+}
+
+func checkEpisodeExistsCached(destPath, seasonEpisode string, cache *fsCache) (bool, error) {
 	if _, err := os.Stat(destPath); os.IsNotExist(err) {
 		return false, nil
 	}
 
-	// Read all entries in the destination season directory
-	entries, err := os.ReadDir(destPath)
+	var entries []os.DirEntry
+	var err error
+	if cache != nil {
+		entries, err = cache.readDir(destPath)
+	} else {
+		entries, err = os.ReadDir(destPath)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -629,10 +901,20 @@ func checkEpisodeExists(destPath, seasonEpisode string) (bool, error) {
 
 // checkSeasonPackExists checks if a season pack (S## without episode) already exists in dest season dir.
 func checkSeasonPackExists(destPath, season string) (bool, error) {
+	return checkSeasonPackExistsCached(destPath, season, nil)
+}
+
+func checkSeasonPackExistsCached(destPath, season string, cache *fsCache) (bool, error) {
 	if _, err := os.Stat(destPath); os.IsNotExist(err) {
 		return false, nil
 	}
-	entries, err := os.ReadDir(destPath)
+	var entries []os.DirEntry
+	var err error
+	if cache != nil {
+		entries, err = cache.readDir(destPath)
+	} else {
+		entries, err = os.ReadDir(destPath)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -755,8 +1037,8 @@ func shouldSkipShowsEntry(sourceDir, name string, isDir bool, skipFolders []stri
 }
 
 // ensureSeasonDir creates the season folder only after checking for an existing match.
-func ensureSeasonDir(showDestPath, season string, testMode bool, result *ProcessResult) (destPath string, ok bool) {
-	actualSeason, err := findCaseInsensitiveDir(showDestPath, season)
+func ensureSeasonDir(showDestPath, season string, testMode bool, result *ProcessResult, cache *fsCache) (destPath string, ok bool) {
+	actualSeason, err := findCaseInsensitiveDirCached(showDestPath, season, cache)
 	if err != nil {
 		actualSeason = season
 	}
@@ -766,6 +1048,9 @@ func ensureSeasonDir(showDestPath, season string, testMode bool, result *Process
 			if err := os.MkdirAll(destPath, 0755); err != nil {
 				fmt.Printf("Error creating destination directory '%s': %v\n", destPath, err)
 				return "", false
+			}
+			if cache != nil {
+				cache.invalidate(showDestPath)
 			}
 		}
 		result.CreatedDirs = append(result.CreatedDirs, destPath)
@@ -934,10 +1219,20 @@ func removeEmptyDirs(root string) {
 }
 
 // processOneShowFolder moves a matched show folder into shows/{show}/{season}/.
-func processOneShowFolder(sourceDir, destDir, folderName string, info *ShowInfo, testMode bool, reader *bufio.Reader, result *ProcessResult) {
-	showFolder := resolveShowDestFolder(destDir, info.ShowName, testMode, reader)
+func processOneShowFolder(sourceDir, destDir, folderName string, info *ShowInfo, testMode bool, reader *bufio.Reader, result *ProcessResult, idx *showLibraryIndex, cache *fsCache, resolvedCache map[string]string) {
+	showFolder := resolveShowDestFolderWithIndex(idx, destDir, info.ShowName, resolvedCache, testMode, reader)
 	showDestPath := filepath.Join(destDir, showFolder)
-	destPath, ok := ensureSeasonDir(showDestPath, info.Season, testMode, result)
+	if _, err := os.Stat(showDestPath); os.IsNotExist(err) && !testMode {
+		if err := os.MkdirAll(showDestPath, 0755); err != nil {
+			fmt.Printf("Error creating show directory '%s': %v\n", showDestPath, err)
+			return
+		}
+		idx.addFolder(showFolder)
+		if cache != nil {
+			cache.invalidate(destDir)
+		}
+	}
+	destPath, ok := ensureSeasonDir(showDestPath, info.Season, testMode, result, cache)
 	if !ok {
 		return
 	}
@@ -958,9 +1253,9 @@ func processOneShowFolder(sourceDir, destDir, folderName string, info *ShowInfo,
 	var isDuplicate bool
 	var err error
 	if info.SeasonOnly {
-		isDuplicate, err = checkSeasonPackExists(destPath, info.Season)
+		isDuplicate, err = checkSeasonPackExistsCached(destPath, info.Season, cache)
 	} else {
-		isDuplicate, err = checkEpisodeExists(destPath, info.SeasonEpisode)
+		isDuplicate, err = checkEpisodeExistsCached(destPath, info.SeasonEpisode, cache)
 	}
 	if err != nil {
 		fmt.Printf("Error checking for duplicate: %v\n", err)
@@ -996,6 +1291,9 @@ func processOneShowFolder(sourceDir, destDir, folderName string, info *ShowInfo,
 		}
 		result.MovedCount++
 		result.MovedItems = append(result.MovedItems, fmt.Sprintf("%s -> %s (duplicate)", sourcePath, dupePath))
+		if cache != nil {
+			cache.invalidate(destPath)
+		}
 		return
 	}
 
@@ -1015,6 +1313,9 @@ func processOneShowFolder(sourceDir, destDir, folderName string, info *ShowInfo,
 	}
 	result.MovedCount++
 	result.MovedItems = append(result.MovedItems, fmt.Sprintf("%s -> %s", sourcePath, destFolderPath))
+	if cache != nil {
+		cache.invalidate(destPath)
+	}
 }
 
 func collectUnsureShows(sourceDir string, processed map[string]bool, skipFolders []string) []UnsureItem {
@@ -1055,6 +1356,9 @@ func processShows(sourceDir, destDir string, testMode bool, skipFolders []string
 		MovedCount:  0,
 		Unsure:      []UnsureItem{},
 	}
+	fsCache := newFSCache()
+	showIndex := buildShowLibraryIndex(destDir, fsCache)
+	resolvedShows := make(map[string]string)
 	var stdinReader *bufio.Reader
 	if !testMode {
 		stdinReader = bufio.NewReader(os.Stdin)
@@ -1119,7 +1423,7 @@ func processShows(sourceDir, destDir string, testMode bool, skipFolders []string
 		if info == nil {
 			return
 		}
-		processOneShowFolder(sourceDir, destDir, folderName, info, testMode, stdinReader, result)
+		processOneShowFolder(sourceDir, destDir, folderName, info, testMode, stdinReader, result, showIndex, fsCache, resolvedShows)
 		processed[folderName] = true
 	}
 
@@ -1225,7 +1529,7 @@ func moveUnsureItemToDest(item UnsureItem, destDir string) {
 
 	// For shows items, try to parse the show pattern for proper routing.
 	if item.SourceLabel == "shows" {
-		info, _ := parseShowEntry(item.Name)
+		info := parseShowEntryForUnsure(item.Name)
 		if info != nil {
 			entryName := item.Name
 			if isMediaFileName(item.Name) {
@@ -1253,7 +1557,8 @@ func moveUnsureItemToDest(item UnsureItem, destDir string) {
 					fmt.Printf("Warning: folder '%s' already exists but file not inside — moving file directly\n", folderPath)
 				}
 			}
-			showDestPath := filepath.Join(destDir, info.ShowName)
+			showFolder := resolveShowDestFolder(destDir, info.ShowName, false, nil)
+			showDestPath := filepath.Join(destDir, showFolder)
 			if err := os.MkdirAll(showDestPath, 0755); err != nil {
 				fmt.Printf("Error creating show directory '%s': %v\n", showDestPath, err)
 				return
@@ -1345,7 +1650,7 @@ func processMovies(sourceDir, destDir string, testMode bool, skipFolders []strin
 	// Track wrapped folders to include them in directory processing
 	wrappedFolders := make(map[string]bool)
 
-	// FIRST PASS: Process files and wrap them in folders
+	// FIRST PASS: wrap loose media files in folders
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue // Skip directories in first pass
@@ -1366,6 +1671,10 @@ func processMovies(sourceDir, destDir string, testMode bool, skipFolders []strin
 		}
 
 		if isInSkipList(fileName, skipFolders) {
+			continue
+		}
+
+		if !isMediaFileName(fileName) {
 			continue
 		}
 
