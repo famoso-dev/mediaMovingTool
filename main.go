@@ -1721,11 +1721,25 @@ func processMovies(sourceDir, destDir string, testMode bool, skipFolders []strin
 			continue
 		}
 
-		logPrefix := "Moved folder"
-		if testMode {
-			logPrefix = "Would move folder"
+		destFolderName := stripMediaExtensions(entryName)
+		destPath := filepath.Join(destDir, destFolderName)
+
+		if _, err := os.Stat(destPath); err == nil {
+			fmt.Printf("Warning: Destination already exists, skipping: %s\n", destPath)
+			continue
 		}
-		moveEntryToDest(sourceDir, destDir, entryName, result, testMode, logPrefix)
+
+		if testMode {
+			fmt.Printf("[TEST] Would move folder: %s -> %s\n", sourcePath, destPath)
+		} else {
+			if err := os.Rename(sourcePath, destPath); err != nil {
+				fmt.Printf("Error moving '%s' to '%s': %v\n", sourcePath, destPath, err)
+				continue
+			}
+			fmt.Printf("Moved folder: %s -> %s\n", sourcePath, destPath)
+		}
+		result.MovedCount++
+		result.MovedItems = append(result.MovedItems, fmt.Sprintf("%s -> %s", sourcePath, destPath))
 	}
 
 	if testMode {
